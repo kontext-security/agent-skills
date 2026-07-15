@@ -9,30 +9,30 @@ You are operating a Kontext organization on behalf of one of its admins, through
 
 ## Setup
 
-Credentials come from the environment — never ask the user to paste secrets into the chat, and never print them:
+**Connect once, then run commands.** All requests go through the bundled helper, which authenticates the first time it needs to:
 
 ```
-KONTEXT_CLIENT_ID       service-account client id (from Settings → Agent access)
-KONTEXT_CLIENT_SECRET   service-account client secret
-KONTEXT_API_BASE        optional, default https://api.kontext.security
+scripts/kontext-api.sh GET /api/v1/policy/settings
 ```
 
-If they are missing, tell the user: create agent credentials in the Kontext dashboard under **Settings → Agent access**, then put both values in the shell environment or a `.env` file (never commit it).
+The first call runs the **device flow**: the helper prints a URL and a short code. Relay both to the user verbatim — they open the URL, confirm the code, and approve the scopes in their Kontext dashboard (where they're already signed in). No secret is ever entered in the terminal or shown in chat. The token is then cached; later calls reuse it.
 
-Use the bundled helper for every request — it handles token fetch, caching, and expiry:
+You can also connect explicitly first:
 
 ```
-scripts/kontext-api.sh GET  /api/v1/policy/settings
-scripts/kontext-api.sh POST /api/v1/organizations/current/directory/scim-tokens '{"label":"entra-prod"}'
+scripts/kontext-connect.sh    # prints the URL + code, waits for approval
 ```
 
-Run `scripts/kontext-api.sh GET /api/v1/policy/settings` as a smoke test after setup (needs `management:settings:read`). A 403 means the service account lacks that scope — list what the credential can do instead of retrying.
+Optional environment:
 
-<details>
-<summary>Auth details (only if you cannot use the script)</summary>
+```
+KONTEXT_API_BASE   optional, default https://api.kontext.security
+KONTEXT_SCOPES     optional, override the requested scopes (space-separated)
+```
 
-`POST {KONTEXT_API_BASE}/oauth2/token` with HTTP Basic auth (`client_id:client_secret`), body `grant_type=client_credentials&audience={KONTEXT_API_BASE}/api/v1&scope=<space-joined scopes>`. The `audience` parameter is required. Tokens are short-lived; refetch on 401. Send `User-Agent: kontext-skill/0.1.0`.
-</details>
+**CI / headless** (no human to approve): set `KONTEXT_CLIENT_ID` + `KONTEXT_CLIENT_SECRET` from a service account (dashboard → Settings → Agent access → Advanced), and the helper uses client-credentials instead of the device flow — same commands, no browser.
+
+A 403 means the connected identity lacks that scope — tell the user which scope is needed rather than retrying.
 
 ## API map
 
