@@ -16,7 +16,7 @@ TOKEN_FILE="$CACHE_DIR/token.json"
 # and every request 401s. KONTEXT_SCOPES overrides if a narrower token is wanted.
 SCOPES="${KONTEXT_SCOPES:-management:providers:read management:providers:write management:applications:read management:applications:write management:policy:read management:policy:write management:directory:read management:directory:write management:settings:read management:settings:write management:logs:read management:logs:write management:deployments:read management:deployments:write}"
 
-# Authentication is either interactive device flow (default) or, when a
+# Authentication is either interactive browser approval (default) or, when a
 # service-account secret is present, client credentials (CI / headless).
 fetch_token_client_credentials() {
   mkdir -p "$CACHE_DIR" && chmod 700 "$CACHE_DIR"
@@ -42,7 +42,7 @@ get_token() {
   if [ -n "${KONTEXT_CLIENT_ID:-}" ] && [ -n "${KONTEXT_CLIENT_SECRET:-}" ]; then
     fetch_token_client_credentials              # CI / headless fallback
   else
-    "$(dirname "$0")/kontext-connect.sh" >&2    # interactive device flow (default)
+    "$(dirname "$0")/kontext-connect.sh" >&2    # interactive browser approval (default)
   fi
   jq -r '.access_token' "$TOKEN_FILE"
 }
