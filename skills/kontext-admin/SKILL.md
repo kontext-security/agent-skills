@@ -46,7 +46,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 |---|---|---|
 | Directory / SCIM | `GET/POST /organizations/current/directory/scim-tokens`, `POST …/scim-tokens/{sha256}/revoke`, `GET …/directory/status`, `…/groups`, `…/reconciliation` | `management:directory:read` / `:write` |
 | Org settings | `GET/PATCH /policy/settings` (`policyEnabled`, `payloadCaptureMode`) | `management:settings:read` / `:write` |
-| Cedar policies | `POST /policy/cedar/validate`, `GET/POST /policy/cedar/revisions`, `GET /policy/cedar/revisions/{revisionId}`, `POST /policy/cedar/revisions/{revisionId}/activate`, `PATCH /policy/cedar/mode` (`disabled`\|`observe`\|`enforce`), `POST /policy/cedar/evaluate` | `management:policy:read` / `:write` |
+| Cedar policy | `GET/PUT /policy` (authored policy, ETag), `POST /policy/validations`, `GET/PUT /policy/deployment` (active deployment, ETag) | `management:policy:read` / `:write` |
 | Decisions | `GET /decisions` (filters: provider, decisionResult, decisionCategory, reasonCode, riskLevel, installationId, sessionId, from/to; cursor pagination), `GET /decisions/{id}` | `management:logs:read` |
 | Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
 | Releases | `GET /deployments/releases`, `GET /deployments/releases/latest`, `POST /deployments/releases/{version}/artifacts/{kind}/download-url` | `management:deployments:read` |
@@ -71,13 +71,40 @@ Rate limit: 120 requests/min per credential. On 429, wait the `Retry-After` seco
 
 ### Change Cedar policy safely
 
-Policies are **immutable revisions** — you never edit in place. The safe order:
+There is **one** authored policy and **one** independent deployment. You never edit
+in place — you replace, guarded by ETags so you can't clobber a concurrent change.
+Authoring (saving policy text) and deploying (choosing what runs, in which mode) are
+separate steps: save produces an opaque `policyVersionId`, deploy points the
+deployment at a version and a mode. The safe order:
 
-1. `POST /policy/cedar/validate` with `{"policyText": …}` (complete native Cedar text). Fix diagnostics before going further.
-2. `POST /policy/cedar/evaluate` to simulate: pass `policyText` (ad hoc) or `revisionId`, plus `evaluationPrincipal`, `toolName`, `toolInput`, and the `rolloutMode` to simulate. Confirm the decision matches intent **before** anything is live.
-3. `POST /policy/cedar/revisions` (`policyText`, optional `description`) — creates the immutable revision.
-4. `POST /policy/cedar/revisions/{revisionId}/activate` — atomic switch.
-5. If the org is new to Cedar, roll out via `PATCH /policy/cedar/mode`: `observe` first (decisions logged, not enforced), verify through decisions (below), then `enforce`. `disabled` turns Cedar off.
+1. **Read state + ETags.** `GET /policy` (returns `policyText`, `policyVersionId`,
+   and an `ETag` response header) and `GET /policy/deployment` (returns the deployed
+   `policyVersionId`, `rolloutMode`, and its own `ETag`). Keep both ETags.
+2. **Validate the exact text.** `POST /policy/validations` with
+   `{"policyText": "<complete native Cedar>"}`. Fix all diagnostics before going further.
+3. **Save without deploying.** `PUT /policy` with body `{"policyText": …}` and header
+   `If-Match: <policy ETag from step 1>` (or `If-None-Match: *` if no policy exists yet).
+   The response body carries the new `policyVersionId` and a fresh `ETag`. Nothing is
+   live yet — you've only stored the text.
+4. **Deploy in observe first.** `PUT /policy/deployment` with header
+   `If-Match: <deployment ETag from step 1>` and body
+   `{"policyVersionId": "<from step 3>", "rolloutMode": "observe"}`. In `observe`,
+   decisions are logged but **not** enforced. Verify through decisions (below).
+5. **Promote to enforce.** Re-read `GET /policy/deployment` for its current ETag, then
+   `PUT /policy/deployment` with `If-Match` + `{"policyVersionId": …, "rolloutMode": "enforce"}`.
+   To turn Cedar off entirely, deploy `{"policyVersionId": null, "rolloutMode": "disabled"}`.
+
+**On `412 precondition_failed`:** the resource changed under you. Re-read only the
+resource whose ETag was stale (`GET /policy` or `GET /policy/deployment`), reconcile,
+and retry — never strip the `If-Match` header to force the write.
+
+**Rollback** = re-save the previous exact policy text (content is de-duplicated, so you
+get the same internal version handle back) and deploy that version. There is no public
+revision list to enumerate; keep the text you want to roll back to.
+
+> There is no public simulate/evaluate endpoint — `observe` mode plus the decisions
+> query below **is** the dry-run: deploy in observe, trigger the tool call, inspect the
+> decision, then enforce.
 
 ### Verify policy behavior through decisions
 
