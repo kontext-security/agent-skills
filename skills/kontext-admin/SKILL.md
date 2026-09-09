@@ -12,7 +12,7 @@ You are operating a Kontext organization on behalf of one of its admins, through
 **Connect once, then run commands.** All requests go through the bundled helper, which authenticates the first time it needs to:
 
 ```
-scripts/kontext-api.sh GET /api/v1/policy/settings
+scripts/kontext-api.sh GET /api/v1/policy/deployment
 ```
 
 The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The token is then cached; later calls reuse it.
@@ -34,7 +34,7 @@ KONTEXT_CONNECT_FLOW   optional, "device" for the device-code flow (RFC 8628):
                        enabled (dev/self-hosted).
 ```
 
-**CI / headless** (no human to approve): set `KONTEXT_CLIENT_ID` + `KONTEXT_CLIENT_SECRET` from a service account (dashboard → Settings → Agent access → Advanced), and the helper uses client-credentials instead of the browser — same commands, no approval step.
+**CI / headless** (no human to approve): set `KONTEXT_CLIENT_ID` + `KONTEXT_CLIENT_SECRET` from a service account (dashboard → Settings → Agent access → Advanced), and the helper uses client-credentials instead of the browser. For policy changes, choose the **Policy author** preset and export `KONTEXT_SCOPES` with the granted scopes. The creator must remain an organization admin. **Observer** grants policy reads, replay, and blocked-call reports without writes. Use a separate `XDG_CACHE_HOME` for each service account or API environment so a cached token cannot select the wrong identity.
 
 A 403 means the connected identity lacks that scope — tell the user which scope is needed rather than retrying.
 
@@ -46,7 +46,9 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 |---|---|---|
 | Directory / SCIM | `GET/POST /organizations/current/directory/scim-tokens`, `POST …/scim-tokens/{sha256}/revoke`, `GET …/directory/status`, `…/groups`, `…/reconciliation` | `management:directory:read` / `:write` |
 | Org settings | `GET/PATCH /policy/settings` (`policyEnabled`, `payloadCaptureMode`) | `management:settings:read` / `:write` |
-| Cedar policy | `GET/PUT /policy` (authored policy, ETag), `POST /policy/validations`, `GET/PUT /policy/deployment` (active deployment, ETag) | `management:policy:read` / `:write` |
+| Policy state and history | `GET /policy/deployment` (both slots + ETag), `GET /policy`, `GET /policy/versions`, `GET /policy/versions/{id}`, `GET /policy/rule-templates` | `management:policy:read` |
+| Policy actions | `POST /policy/actions`, `POST /policy/validations` | `management:policy:write` |
+| Policy evidence | `POST /policy/replay`, `GET /policy/blocked?days=7` | `management:policy:read` |
 | Decisions | `GET /decisions` (filters: provider, decisionResult, decisionCategory, reasonCode, riskLevel, installationId, sessionId, from/to; cursor pagination), `GET /decisions/{id}` | `management:logs:read` |
 | Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
 | Releases | `GET /deployments/releases`, `GET /deployments/releases/latest`, `POST /deployments/releases/{version}/artifacts/{kind}/download-url` | `management:deployments:read` |
@@ -71,44 +73,87 @@ Rate limit: 120 requests/min per credential. On 429, wait the `Retry-After` seco
 
 ### Change Cedar policy safely
 
-There is **one** authored policy and **one** independent deployment. You never edit
-in place — you replace, guarded by ETags so you can't clobber a concurrent change.
-Authoring (saving policy text) and deploying (choosing what runs, in which mode) are
-separate steps: save produces an opaque `policyVersionId`, deploy points the
-deployment at a version and a mode. The safe order:
+The deployment has an enforced version and an optional observing version. The
+observing version is replayed against recorded calls; adding to it does not weaken
+the enforced version. In an observe-only workspace, `policyVersionId` is the
+observing version. A disabled workspace stays disabled until resumed in the dashboard.
+Local Cedar evaluation on each Mac makes the policy decision; replay reports what
+recorded calls would have done under the candidate.
 
-1. **Read state + ETags.** `GET /policy` (returns `policyText`, `policyVersionId`,
-   and an `ETag` response header) and `GET /policy/deployment` (returns the deployed
-   `policyVersionId`, `rolloutMode`, and its own `ETag`). Keep both ETags.
-2. **Validate the exact text.** `POST /policy/validations` with
-   `{"policyText": "<complete native Cedar>"}`. Fix all diagnostics before going further.
-3. **Save without deploying.** `PUT /policy` with body `{"policyText": …}` and header
-   `If-Match: <policy ETag from step 1>` (or `If-None-Match: *` if no policy exists yet).
-   The response body carries the new `policyVersionId` and a fresh `ETag`. Nothing is
-   live yet — you've only stored the text.
-4. **Deploy in observe first.** `PUT /policy/deployment` with header
-   `If-Match: <deployment ETag from step 1>` and body
-   `{"policyVersionId": "<from step 3>", "rolloutMode": "observe"}`. In `observe`,
-   decisions are logged but **not** enforced. Verify through decisions (below).
-5. **Promote to enforce.** Re-read `GET /policy/deployment` for its current ETag, then
-   `PUT /policy/deployment` with `If-Match` + `{"policyVersionId": …, "rolloutMode": "enforce"}`.
-   To turn Cedar off entirely, deploy `{"policyVersionId": null, "rolloutMode": "disabled"}`.
+1. **Read both slots and the deployment ETag.** All paths below start with `/api/v1`.
+   Read `/policy/deployment`, then `/policy/versions/{id}` for each non-null slot.
+   Read `/policy/rule-templates` for available templates and `/policy/versions` for history.
+   The helper writes successful response headers when `KONTEXT_RESPONSE_HEADERS`
+   is set. Failed requests leave the file unchanged:
 
-**On `412 precondition_failed`:** the resource changed under you. Re-read only the
-resource whose ETag was stale (`GET /policy` or `GET /policy/deployment`), reconcile,
-and retry — never strip the `If-Match` header to force the write.
+   ```bash
+   headers=$(mktemp)
+   KONTEXT_RESPONSE_HEADERS="$headers" scripts/kontext-api.sh GET /api/v1/policy/deployment
+   etag=$(awk 'tolower($1) == "etag:" {sub(/\r$/, "", $2); print $2}' "$headers")
+   ```
 
-**Rollback** = re-save the previous exact policy text (content is de-duplicated, so you
-get the same internal version handle back) and deploy that version. There is no public
-revision list to enumerate; keep the text you want to roll back to.
+2. **Add one policy, observing.** Use a template or exactly one static Cedar
+   statement with a unique `@id("custom:...")`. A raw ID must not overlap an
+   existing policy ID or a catalog template's reserved prefix. For custom Cedar,
+   validate the full candidate text through `POST /policy/validations` first; the
+   action also validates the final text before saving anything.
 
-> There is no public simulate/evaluate endpoint — `observe` mode plus the decisions
-> query below **is** the dry-run: deploy in observe, trigger the tool call, inspect the
-> decision, then enforce.
+   ```bash
+   KONTEXT_RESPONSE_HEADERS="$headers" scripts/kontext-api.sh POST /api/v1/policy/actions \
+     '{"action":"add","templateId":"block-github-force-push"}' "$etag"
+   ```
+
+   Custom form: `{"action":"add","cedar":"@id(\"custom:no-shell\") forbid(principal, action, resource);"}`.
+   Optional `endpointId` is an enrolled installation ID; `agentId` is
+   `anthropic-claude-code` or `openai-codex` (use the catalog/OpenAPI enum).
+   To add copies for several scopes in one transaction, use `scopes` instead of
+   the top-level scope fields, for example `[{"agentId":"openai-codex"}]`.
+   The response names any companion guards added. After a successful action,
+   refresh `etag` from its response headers before the next action. Only use
+   ETags from successful deployment reads or policy actions, never error responses
+   or other endpoints. After a 422, fix the policy and retain the last deployment
+   ETag; a subsequent 412 still requires a fresh deployment read.
+
+3. **Replay before promoting.** `POST /policy/replay` with
+   `{"enforcingVersionId":"<active ID>","observingVersionId":"<observing ID>","days":7}`.
+   Supported windows are 7, 14, and 30 days. In observe-only workspaces use
+   `policyVersionId` for both IDs and set `baselinePolicyText` to the catalog's
+   default-permit text. If disabled with only an observing slot, use its ID for
+   both and the same baseline. Report per-policy `wouldBlock`/`wouldAllow`,
+   `needsCapture`, `notReplayable`, and `truncated`; zero captured calls are not
+   evidence that a policy is safe. Replay needs only policy read access.
+
+4. **Promote explicitly.** Send `{"action":"enforce","policyId":"block-github-force-push"}`
+   to `/policy/actions` with the current deployment ETag. This promotes only
+   that policy's blocks; other changes keep observing. This explicit action may
+   switch observe → enforce. In a paused workspace it changes the selection but
+   keeps enforcement paused. Companion guards are separate policies: review and
+   explicitly enforce them too when the template needs them.
+   Stop with `{"action":"stop","policyId":"..."}` to move it back to observing.
+   Remove with `{"action":"delete","policyId":"...","where":"observing"}` or
+   `"where":"enforced"`; deleting an enforced policy also removes its observing copies.
+
+5. **Verify the result.** Re-read `/policy/deployment` and `/policy/versions`.
+   Check `/policy/blocked?days=7` and `/decisions?from=<change time>` after a relevant
+   test call. History records one origin per action. A successful API write does
+   not prove that a Mac has checked in and applied it.
+
+**Always pass `If-Match` as the helper's fourth argument for actions.** A missing
+header returns 428. On 412, re-read the deployment, reconcile the change, and
+re-present it; never blindly retry or remove the precondition. On a timeout,
+read deployment and History to determine whether the transaction committed.
+Invalid Cedar returns 422 with diagnostics, unknown IDs return 404, and policy-ID
+collisions or conflicting states return 409.
+
+**Never send `PUT /policy/deployment` from this skill.** It controls rollout mode
+for the whole organization and remains a dashboard workflow. Do not use
+`PUT /policy` for per-policy changes either; `/policy/actions` saves and deploys
+atomically. Policy write access still technically permits those lower-level API
+routes; the Policy author preset does not separate authoring from enforcement.
 
 ### Verify policy behavior through decisions
 
-After any policy or settings change: have the user (or a test endpoint) trigger the relevant tool call, then query `GET /api/v1/decisions?provider=github&from=<change time>` and inspect `decisionResult`, `reasonCode`, `riskLevel`. Use `GET /decisions/{id}` for a single decision. This is the ground truth for "did the change do what we intended".
+After any policy or settings change: have the user (or a test endpoint) trigger the relevant tool call, then query `GET /api/v1/decisions?from=<change time>` and inspect `decisionResult`, `reasonCode`, `riskLevel`. Use `GET /decisions/{id}` for a single decision. This is the ground truth for "did the change do what we intended".
 
 ### Download the latest release for MDM distribution
 

@@ -16,7 +16,7 @@ set -euo pipefail
 
 BASE="${KONTEXT_API_BASE:-https://api.kontext.security}"
 CLIENT_ID="kontext-cli"
-UA="kontext-skill/0.3.0"
+UA="kontext-skill/0.4.0"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/kontext-skill"
 TOKEN_FILE="$CACHE_DIR/token.json"
 CALLBACK_PORT=8976
@@ -46,6 +46,16 @@ open_url() { # best effort; caller prints the URL either way
 }
 
 # ---------------------------------------------------------------- PKCE flow
+listener_pid=""
+result_file=""
+cleanup_pkce() {
+  if [ -n "$listener_pid" ]; then
+    kill "$listener_pid" 2>/dev/null || true
+    wait "$listener_pid" 2>/dev/null || true
+  fi
+  [ -z "$result_file" ] || rm -f "$result_file"
+}
+
 connect_pkce() {
   command -v node >/dev/null || { echo "kontext-connect: node is required for the browser flow (set KONTEXT_CONNECT_FLOW=device for the device-code flow)" >&2; exit 1; }
   command -v openssl >/dev/null || { echo "kontext-connect: openssl is required" >&2; exit 1; }
@@ -57,7 +67,10 @@ connect_pkce() {
 
   # Loopback listener: waits for exactly one /callback hit, prints its params
   # as JSON, exits. 5 minute timeout.
-  local result_file
+  trap cleanup_pkce EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   result_file=$(mktemp)
   node -e '
     const http = require("http");
@@ -74,7 +87,7 @@ connect_pkce() {
     srv.listen(port, "127.0.0.1");
     setTimeout(() => { console.log(JSON.stringify({ error: "timeout" })); process.exit(1); }, 300000);
   ' "$CALLBACK_PORT" > "$result_file" &
-  local listener_pid=$!
+  listener_pid=$!
   sleep 0.3
   kill -0 "$listener_pid" 2>/dev/null || { cat "$result_file" >&2; echo "kontext-connect: could not listen on 127.0.0.1:$CALLBACK_PORT (port in use?)" >&2; exit 1; }
 
@@ -89,6 +102,7 @@ connect_pkce() {
   echo "  Waiting for approval…"
 
   wait "$listener_pid" || true
+  listener_pid=""
   local cb code cb_state err
   cb=$(cat "$result_file"); rm -f "$result_file"
   err=$(printf '%s' "$cb" | jq -r '.error // empty')
