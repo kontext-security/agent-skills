@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # kontext-api.sh — authenticated requests against the Kontext management API.
-# Usage: kontext-api.sh METHOD PATH [JSON_BODY]
+# Usage: kontext-api.sh METHOD PATH [JSON_BODY] [IF_MATCH]
 #   kontext-api.sh GET  /api/v1/policy/settings
 #   kontext-api.sh POST /api/v1/organizations/current/install-tokens '{"label":"ci"}'
 # Requires: KONTEXT_CLIENT_ID, KONTEXT_CLIENT_SECRET. Optional: KONTEXT_API_BASE.
 set -euo pipefail
 
 BASE="${KONTEXT_API_BASE:-https://api.kontext.security}"
-UA="kontext-skill/0.1.0"
+UA="kontext-skill/0.4.0"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/kontext-skill"
 TOKEN_FILE="$CACHE_DIR/token.json"
 # Request the full management scope set: Hydra narrows to the scopes actually
@@ -47,9 +47,17 @@ get_token() {
   jq -r '.access_token' "$TOKEN_FILE"
 }
 
-METHOD="${1:?usage: kontext-api.sh METHOD PATH [JSON_BODY]}"
-API_PATH="${2:?usage: kontext-api.sh METHOD PATH [JSON_BODY]}"
+METHOD="${1:?usage: kontext-api.sh METHOD PATH [JSON_BODY] [IF_MATCH]}"
+API_PATH="${2:?usage: kontext-api.sh METHOD PATH [JSON_BODY] [IF_MATCH]}"
 BODY="${3:-}"
+IF_MATCH="${4:-}"
+# Optional private file for successful response headers, including the deployment ETag.
+RESPONSE_HEADERS="${KONTEXT_RESPONSE_HEADERS:-}"
+HEADERS_TMP=""
+if [ -n "$RESPONSE_HEADERS" ]; then
+  HEADERS_TMP=$(mktemp "${RESPONSE_HEADERS}.XXXXXX")
+  trap 'rm -f "$HEADERS_TMP"' EXIT
+fi
 
 run() {
   local token args
@@ -58,6 +66,8 @@ run() {
     -H "Authorization: Bearer $token" -H "Accept: application/json" -H "User-Agent: $UA"
     -w '\n%{http_code}')
   [ -n "$BODY" ] && args+=(-H "Content-Type: application/json" --data "$BODY")
+  [ -n "$IF_MATCH" ] && args+=(-H "If-Match: $IF_MATCH")
+  [ -n "$HEADERS_TMP" ] && args+=(-D "$HEADERS_TMP")
   curl "${args[@]}"
 }
 
@@ -71,4 +81,9 @@ if [ "$STATUS" = "401" ]; then # stale token: refetch once, retry (safe for any 
 fi
 
 printf '%s\n' "$PAYLOAD"
-case "$STATUS" in 2*) exit 0;; *) echo "HTTP $STATUS" >&2; exit 1;; esac
+case "$STATUS" in
+  2*)
+    [ -z "$HEADERS_TMP" ] || mv -f "$HEADERS_TMP" "$RESPONSE_HEADERS"
+    exit 0 ;;
+  *) echo "HTTP $STATUS" >&2; exit 1 ;;
+esac
