@@ -50,7 +50,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Policy actions | `POST /policy/actions`, `POST /policy/validations` | `management:policy:write` |
 | Policy evidence | `POST /policy/replay`, `GET /policy/blocked?days=7` | `management:policy:read` |
 | Decisions | `GET /decisions` (filters: provider, decisionResult, decisionCategory, reasonCode, riskLevel, installationId, sessionId, from/to; cursor pagination), `GET /decisions/{id}` | `management:logs:read` |
-| Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
+| Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` — **requires OTEL trace ingestion, which is not enabled on hosted deployments.** Do not reach for these to answer "what is this org doing"; see the activity workflow below | `management:logs:read` |
 | Releases | `GET /deployments/releases`, `GET /deployments/releases/latest`, `POST /deployments/releases/{version}/artifacts/{kind}/download-url` | `management:deployments:read` |
 | Install tokens | `GET/POST /organizations/current/install-tokens`, `POST …/{sha256}/revoke` | `management:deployments:read` / `:write` |
 
@@ -150,6 +150,37 @@ for the whole organization and remains a dashboard workflow. Do not use
 `PUT /policy` for per-policy changes either; `/policy/actions` saves and deploys
 atomically. Policy write access still technically permits those lower-level API
 routes; the Policy author preset does not separate authoring from enforcement.
+
+### Report on org activity (tool usage, sessions, denials)
+
+`GET /api/v1/decisions` is the activity surface — one row per tool call the endpoint
+daemon evaluated, carrying `toolName`, `sessionId`, `installationId`, `occurredAt`,
+`decisionResult`, `decisionCategory`, `reasonCode`, `provider`, `operation`. Use it for
+"top tools", "which sessions", "what got denied", "how much traffic".
+
+**Do not use `/traces` or `/traces/stats` for this.** Trace ingestion is not enabled on
+hosted deployments, so those endpoints return `{"items": []}` and an all-zeros stats
+payload (`totalTraces: 0`, `topTools: []`) — indistinguishable from a genuinely idle
+org. An empty `/traces` result is not evidence that nothing happened; re-check
+`/decisions` before reporting inactivity.
+
+There is no server-side aggregation, so top-N means paging and counting client-side:
+
+```
+cursor=""; : > decisions.jsonl
+while :; do
+  q="/api/v1/decisions?limit=200"; [ -n "$cursor" ] && q="$q&cursor=$cursor"
+  resp=$(scripts/kontext-api.sh GET "$q") || break
+  printf '%s' "$resp" | jq -c '.items[]?' >> decisions.jsonl
+  cursor=$(printf '%s' "$resp" | jq -r '.nextCursor // empty'); [ -z "$cursor" ] && break
+done
+jq -r '.toolName' decisions.jsonl | sort | uniq -c | sort -rn | head -20
+```
+
+Narrow with `from`/`to` before paging when the user asked about a window — the default
+is the full retained history. When reporting, say which window and how many rows the
+numbers cover, and note that `toolName` may be empty on some rows (e.g. async
+telemetry) rather than silently dropping them.
 
 ### Verify policy behavior through decisions
 
