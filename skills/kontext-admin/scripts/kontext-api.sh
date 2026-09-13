@@ -14,8 +14,8 @@ UA="kontext-skill/0.5.0"
 fetch_token_client_credentials() {
   mkdir -p "$CACHE_DIR" && chmod 700 "$CACHE_DIR"
   local resp expires_in
-  resp=$(curl -sS --fail-with-body -X POST "$BASE/oauth2/token" \
-    -u "$KONTEXT_CLIENT_ID:$KONTEXT_CLIENT_SECRET" \
+  resp=$(printf 'user = %s\n' "$(printf '%s' "$IDENTITY:$KONTEXT_CLIENT_SECRET" | jq -Rs .)" | \
+    curl --config - -sS --fail-with-body -X POST "$BASE/oauth2/token" \
     -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" \
     --data-urlencode "grant_type=client_credentials" \
     --data-urlencode "audience=$BASE/api/v1" \
@@ -32,7 +32,7 @@ get_token() {
     jq -r '.access_token' "$TOKEN_FILE"
     return
   fi
-  if [ -n "${KONTEXT_CLIENT_ID:-}" ] && [ -n "${KONTEXT_CLIENT_SECRET:-}" ]; then
+  if [ -n "${KONTEXT_CLIENT_SECRET:-}" ]; then
     fetch_token_client_credentials              # CI / headless fallback
   else
     "$(dirname "$0")/kontext-connect.sh" >&2    # interactive browser approval (default)

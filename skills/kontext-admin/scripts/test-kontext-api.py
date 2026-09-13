@@ -1,35 +1,35 @@
 #!/usr/bin/env python3
 """Run with python3: checks conditional writes against a local HTTP server."""
-import hashlib
 import json
+import base64
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
+from test_helpers import token_path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 requests = []
 identities = []
 token_requests = []
+expected_deleted = None
 families = ["providers", "applications", "policy", "directory", "settings", "logs", "deployments"]
 default_scopes = " ".join(f"management:{family}:{action}" for family in families for action in ["read", "write"])
-
-def token_path(cache, base, client="kontext-cli", scopes=default_scopes):
-    key = hashlib.sha256(f"{base}|{client}|{scopes}".encode()).hexdigest()[:16]
-    return cache / f"token-{key}.json"
-
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         identities.append(self.headers.get("Authorization"))
-        self.send_response(200)
+        status = 401 if self.headers.get("Authorization") == "Bearer stale-token" else 200
+        self.send_response(status)
         self.end_headers()
         self.wfile.write(b'{}')
 
     def do_POST(self):
         if self.path == "/oauth2/token":
             payload = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+            if expected_deleted is not None:
+                assert not expected_deleted.exists(), "401 must remove the keyed file before minting"
             token_requests.append((self.headers.get("Authorization"), payload))
             self.send_response(200)
             self.end_headers()
@@ -50,18 +50,19 @@ class Handler(BaseHTTPRequestHandler):
 with tempfile.TemporaryDirectory() as directory:
     cache = Path(directory) / "kontext-skill"
     cache.mkdir()
-    (cache / "token.json").write_text(json.dumps({"access_token": "legacy-must-not-be-used", "expires_at": 9999999999}))
     headers = Path(directory) / "headers"
     server = HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     env = {**os.environ, "XDG_CACHE_HOME": directory, "KONTEXT_API_BASE": f"http://127.0.0.1:{server.server_port}", "KONTEXT_RESPONSE_HEADERS": str(headers)}
     script = Path(__file__).with_name("kontext-api.sh")
-    token_path(cache, env["KONTEXT_API_BASE"]).write_text(json.dumps({"access_token": "local-test", "expires_at": 9999999999}))
+    token_path(env).write_text(json.dumps({"access_token": "local-test", "expires_at": 9999999999}))
+    (cache / "token.json").write_text(json.dumps({"access_token": "legacy-must-not-be-used", "expires_at": 9999999999}))
     try:
         result = subprocess.run(["bash", str(script), "POST", "/api/v1/policy/actions", '{"action":"enforce","policyId":"test"}', '"deployment-1"'], env=env, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         assert requests == [("/api/v1/policy/actions", '"deployment-1"')]
+        assert not (cache / "token.json").exists(), "Legacy cache must be removed"
         assert 'ETag: "deployment-2"' in headers.read_text()
         assert headers.stat().st_mode & 0o077 == 0
         result = subprocess.run(["bash", str(script), "POST", "/api/v1/policy/actions", '{}', '"stale"'], env=env, capture_output=True, text=True)
@@ -92,6 +93,7 @@ with tempfile.TemporaryDirectory() as directory:
             return identities[-1]
 
         assert get(env) == "Bearer local-test"
+        assert get({**env, "KONTEXT_CLIENT_ID": "alpha", "KONTEXT_CLIENT_SECRET": ""}) == "Bearer local-test", "ID without secret must use the interactive identity"
         contexts = [
             {**env, "KONTEXT_CLIENT_ID": "alpha", "KONTEXT_CLIENT_SECRET": "alpha-secret"},
             {**env, "KONTEXT_CLIENT_ID": "bravo", "KONTEXT_CLIENT_SECRET": "bravo-secret"},
@@ -102,12 +104,24 @@ with tempfile.TemporaryDirectory() as directory:
             assert get(context) == f"Bearer issued-{index}"
             assert get(context) == f"Bearer issued-{index}", "Same context must reuse its token"
             assert len(token_requests) == index, "Each new context needs exactly one token"
-            path = token_path(cache, context["KONTEXT_API_BASE"], context["KONTEXT_CLIENT_ID"], context.get("KONTEXT_SCOPES", default_scopes))
+            path = token_path(context)
             assert path.stat().st_mode & 0o077 == 0
         from urllib.parse import parse_qs
         assert parse_qs(token_requests[0][1])["scope"] == [default_scopes]
         assert parse_qs(token_requests[2][1])["scope"] == ["management:policy:read"]
         assert get(env) == "Bearer local-test", "Service account auth must not overwrite the interactive cache"
-        print("Conditional writes, 403 stop, private headers, 14 scopes, and identity/base/scope cache isolation passed")
+        assert get({**contexts[0], "KONTEXT_API_BASE": env["KONTEXT_API_BASE"] + "/"}) == "Bearer issued-1", "Trailing slash must use the same cache"
+        expected_deleted = token_path(contexts[0])
+        expected_deleted.write_text(json.dumps({"access_token": "stale-token", "expires_at": 9999999999}))
+        before = len(identities)
+        assert get(contexts[0]) == "Bearer issued-5"
+        assert identities[before:] == ["Bearer stale-token", "Bearer issued-5"]
+        assert len(token_requests) == 5, "401 must mint and retry exactly once"
+        assert json.loads(expected_deleted.read_text())["access_token"] == "issued-5"
+        expected_deleted = None
+        special = {**env, "KONTEXT_CLIENT_ID": "quoted", "KONTEXT_CLIENT_SECRET": 'quote"back\\slash'}
+        assert get(special) == "Bearer issued-6"
+        assert base64.b64decode(token_requests[-1][0].split()[1]).decode() == 'quoted:' + special["KONTEXT_CLIENT_SECRET"]
+        print("Conditional writes, stdin credential escaping, 403 no retry, 401 re-mint, ID without secret, legacy removal, private files, 14 scopes, and normalized context isolation passed")
     finally:
         server.shutdown()

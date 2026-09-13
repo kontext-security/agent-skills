@@ -29,7 +29,6 @@ Optional environment:
 
 ```
 KONTEXT_API_BASE       optional, default https://api.kontext.security
-KONTEXT_SCOPES         optional, override the requested scopes (space-separated)
 KONTEXT_CONNECT_FLOW   optional, "device" for the device-code flow (RFC 8628):
                        prints a URL + short code to approve on another machine
                        (SSH boxes). Requires a deployment with the device grant
