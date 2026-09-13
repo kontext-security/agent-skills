@@ -15,7 +15,9 @@ You are operating a Kontext organization on behalf of one of its admins, through
 scripts/kontext-api.sh GET /api/v1/policy/deployment
 ```
 
-The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The token is then cached; later calls reuse it.
+The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The helper requests all 14 management scopes. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
+
+Connect once: permissions live under **Settings → Agent access**, are read-only by default, and changes apply to the next request without reconnecting. Use service accounts when each agent needs different access or when running in CI.
 
 You can also connect explicitly first:
 
@@ -34,9 +36,9 @@ KONTEXT_CONNECT_FLOW   optional, "device" for the device-code flow (RFC 8628):
                        enabled (dev/self-hosted).
 ```
 
-**CI / headless** (no human to approve): set `KONTEXT_CLIENT_ID` + `KONTEXT_CLIENT_SECRET` from a service account (dashboard → Settings → Agent access → Advanced), and the helper uses client-credentials instead of the browser. For policy changes, choose the **Policy author** preset and export `KONTEXT_SCOPES` with the granted scopes. The creator must remain an organization admin. **Observer** grants policy reads, replay, and blocked-call reports without writes. Use a separate `XDG_CACHE_HOME` for each service account or API environment so a cached token cannot select the wrong identity.
+**CI / headless** (no human to approve): set `KONTEXT_CLIENT_ID` + `KONTEXT_CLIENT_SECRET` from a service account (dashboard → Settings → Agent access → Service accounts). The helper uses client credentials. Choose the granted scopes with a preset such as **Policy author**; `KONTEXT_SCOPES` remains an optional narrower request. The creator must remain an organization admin. Service accounts keep their own grants and are not limited by the connected-agent setting.
 
-A 403 means the connected identity lacks that scope — tell the user which scope is needed rather than retrying.
+On a 403 with `error: "insufficient_scope"`, report the `missingScopes` and the server's `hint` verbatim, then stop. Do not retry, reconnect, or change `KONTEXT_SCOPES` to bypass it. Other 403 responses may be role or session-only restrictions; report the response without inventing missing scopes. Only a signed-in admin can change the connected-agent setting.
 
 ## API map
 
@@ -45,6 +47,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Area | Endpoints | Scope |
 |---|---|---|
 | Directory / SCIM | `GET/POST /organizations/current/directory/scim-tokens`, `POST …/scim-tokens/{sha256}/revoke`, `GET …/directory/status`, `…/groups`, `…/reconciliation` | `management:directory:read` / `:write` |
+| Agent access | `GET /organizations/current/agent-access` (PATCH requires an admin dashboard session) | `management:settings:read` |
 | Org settings | `GET/PATCH /policy/settings` (`policyEnabled`, `payloadCaptureMode`) | `management:settings:read` / `:write` |
 | Policy state and history | `GET /policy/deployment` (both slots + ETag), `GET /policy`, `GET /policy/versions`, `GET /policy/versions/{id}`, `GET /policy/rule-templates` | `management:policy:read` |
 | Policy actions | `POST /policy/actions`, `POST /policy/validations` | `management:policy:write` |

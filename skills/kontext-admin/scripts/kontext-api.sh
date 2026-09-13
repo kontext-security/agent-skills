@@ -3,19 +3,12 @@
 # Usage: kontext-api.sh METHOD PATH [JSON_BODY] [IF_MATCH]
 #   kontext-api.sh GET  /api/v1/policy/settings
 #   kontext-api.sh POST /api/v1/organizations/current/install-tokens '{"label":"ci"}'
-# Requires: KONTEXT_CLIENT_ID, KONTEXT_CLIENT_SECRET. Optional: KONTEXT_API_BASE.
+# Auth: browser approval, or KONTEXT_CLIENT_ID + KONTEXT_CLIENT_SECRET for CI.
 set -euo pipefail
 
-BASE="${KONTEXT_API_BASE:-https://api.kontext.security}"
-UA="kontext-skill/0.4.0"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/kontext-skill"
-TOKEN_FILE="$CACHE_DIR/token.json"
-# Request the full management scope set: Hydra narrows to the scopes actually
-# granted to this service account, and the API narrows again to its stored
-# grant. Without an explicit scope, client_credentials yields a scopeless token
-# and every request 401s. KONTEXT_SCOPES overrides if a narrower token is wanted.
-SCOPES="${KONTEXT_SCOPES:-management:providers:read management:providers:write management:applications:read management:applications:write management:policy:read management:policy:write management:directory:read management:directory:write management:settings:read management:settings:write management:logs:read management:logs:write management:deployments:read management:deployments:write}"
+source "$(dirname "$0")/kontext-context.sh"
 
+UA="kontext-skill/0.5.0"
 # Authentication is either interactive browser approval (default) or, when a
 # service-account secret is present, client credentials (CI / headless).
 fetch_token_client_credentials() {

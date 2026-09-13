@@ -14,13 +14,11 @@
 # KONTEXT_SCOPES, KONTEXT_CONNECT_FLOW=pkce|device.
 set -euo pipefail
 
-BASE="${KONTEXT_API_BASE:-https://api.kontext.security}"
+source "$(dirname "$0")/kontext-context.sh"
+
 CLIENT_ID="kontext-cli"
-UA="kontext-skill/0.4.0"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/kontext-skill"
-TOKEN_FILE="$CACHE_DIR/token.json"
+UA="kontext-skill/0.5.0"
 CALLBACK_PORT=8976
-SCOPES="${KONTEXT_SCOPES:-management:providers:read management:providers:write management:applications:read management:applications:write management:policy:read management:policy:write management:directory:read management:directory:write management:settings:read management:settings:write management:logs:read management:deployments:read management:deployments:write}"
 FLOW="${KONTEXT_CONNECT_FLOW:-pkce}"
 
 command -v jq >/dev/null || { echo "kontext-connect: jq is required" >&2; exit 1; }
