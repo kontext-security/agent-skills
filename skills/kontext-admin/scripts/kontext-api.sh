@@ -16,10 +16,10 @@ fetch_token_client_credentials() {
   local resp expires_in
   resp=$(printf 'user = %s\n' "$(printf '%s' "$IDENTITY:$KONTEXT_CLIENT_SECRET" | jq -Rs .)" | \
     curl --config - -sS --fail-with-body -X POST "$BASE/oauth2/token" \
-    -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" \
+    -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" -H "User-Agent: $UA" \
     --data-urlencode "grant_type=client_credentials" \
     --data-urlencode "audience=$BASE/api/v1" \
-    --data-urlencode "scope=$SCOPES")
+    --data-urlencode "scope=$SCOPES") || { printf '%s\n' "$resp" >&2; return 1; }
   expires_in=$(printf '%s' "$resp" | jq -r '.expires_in // 300')
   umask 177
   printf '{"access_token":%s,"expires_at":%s}\n' \
@@ -33,7 +33,7 @@ get_token() {
     return
   fi
   if [ -n "${KONTEXT_CLIENT_SECRET:-}" ]; then
-    fetch_token_client_credentials              # CI / headless fallback
+    fetch_token_client_credentials || return   # CI / headless fallback
   else
     "$(dirname "$0")/kontext-connect.sh" >&2    # interactive browser approval (default)
   fi
@@ -54,7 +54,7 @@ fi
 
 run() {
   local token args
-  token=$(get_token)
+  token=$(get_token) || return
   args=(-sS -X "$METHOD" "$BASE$API_PATH"
     -H "Authorization: Bearer $token" -H "Accept: application/json" -H "User-Agent: $UA"
     -w '\n%{http_code}')

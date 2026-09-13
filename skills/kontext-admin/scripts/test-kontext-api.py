@@ -27,10 +27,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/oauth2/token":
+            assert self.headers.get("User-Agent") == "kontext-skill/0.5.0"
             payload = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
             if expected_deleted is not None:
                 assert not expected_deleted.exists(), "401 must remove the keyed file before minting"
             token_requests.append((self.headers.get("Authorization"), payload))
+            if base64.b64decode(self.headers["Authorization"].split()[1]).decode() == "bad-client:bad-secret":
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b'{"error":"invalid_client","error_description":"Client authentication failed"}')
+                return
             self.send_response(200)
             self.end_headers()
             self.wfile.write(json.dumps({"access_token": f"issued-{len(token_requests)}", "expires_in": 300}).encode())
@@ -122,6 +128,17 @@ with tempfile.TemporaryDirectory() as directory:
         special = {**env, "KONTEXT_CLIENT_ID": "quoted", "KONTEXT_CLIENT_SECRET": 'quote"back\\slash'}
         assert get(special) == "Bearer issued-6"
         assert base64.b64decode(token_requests[-1][0].split()[1]).decode() == 'quoted:' + special["KONTEXT_CLIENT_SECRET"]
-        print("Conditional writes, stdin credential escaping, 403 no retry, 401 re-mint, ID without secret, legacy removal, private files, 14 scopes, and normalized context isolation passed")
+        before = len(identities)
+        bad = {**env, "KONTEXT_CLIENT_ID": "bad-client", "KONTEXT_CLIENT_SECRET": "bad-secret"}
+        result = subprocess.run(["bash", str(script), "GET", "/api/v1/policy"], env=bad, capture_output=True, text=True)
+        assert result.returncode != 0 and '"error":"invalid_client"' in result.stderr, result.stderr
+        assert "Client authentication failed" in result.stderr
+        assert len(identities) == before and not token_path(bad).exists(), "Failed mint must stop before the API request or cache write"
+        missing_id = {**env, "KONTEXT_CLIENT_ID": "", "KONTEXT_CLIENT_SECRET": "secret"}
+        before_mints = len(token_requests)
+        result = subprocess.run(["bash", str(script), "GET", "/api/v1/policy"], env=missing_id, capture_output=True, text=True)
+        assert result.returncode != 0 and "KONTEXT_CLIENT_ID is required with KONTEXT_CLIENT_SECRET" in result.stderr
+        assert len(token_requests) == before_mints and len(identities) == before
+        print("Mint failure body and User-Agent, secret without ID, conditional writes, stdin credential escaping, 403 no retry, 401 re-mint, ID without secret, legacy removal, private files, 14 scopes, and normalized context isolation passed")
     finally:
         server.shutdown()
