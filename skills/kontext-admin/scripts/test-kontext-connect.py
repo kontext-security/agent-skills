@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from test_helpers import token_path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
@@ -16,6 +17,7 @@ from urllib.request import urlopen
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
+        assert self.headers.get("User-Agent") == "kontext-skill/0.6.0"
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
         self.send_response(200)
         self.end_headers()
@@ -27,6 +29,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def assert_port_free():
     with socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Ignore closed callbacks in TIME_WAIT.
         sock.bind(("127.0.0.1", 8976))
 
 
@@ -43,7 +46,7 @@ with tempfile.TemporaryDirectory() as directory:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
            "TMPDIR": str(scratch), "XDG_CACHE_HOME": directory,
-           "KONTEXT_CONNECT_FLOW": "pkce",
+           "KONTEXT_CONNECT_FLOW": "pkce", "KONTEXT_CLIENT_ID": "alpha", "KONTEXT_CLIENT_SECRET": "",
            "KONTEXT_API_BASE": f"http://127.0.0.1:{server.server_port}"}
     try:
         for interruption in [signal.SIGINT, signal.SIGTERM, signal.SIGHUP, None]:
@@ -63,7 +66,12 @@ with tempfile.TemporaryDirectory() as directory:
                         process.send_signal(interruption)
                     else:
                         auth_url = next(line.strip() for line in output.splitlines() if "response_type=code" in line)
-                        state = parse_qs(urlparse(auth_url).query)["state"][0]
+                        query = parse_qs(urlparse(auth_url).query)
+                        assert query["client_id"] == ["kontext-cli"], "ID without secret must stay PKCE"
+                        scopes = query["scope"][0]
+                        expected = {f"management:{family}:{action}" for family in ["providers", "applications", "policy", "directory", "settings", "logs", "deployments"] for action in (["read"] if family in ["providers", "applications"] else ["read", "write"])}
+                        assert set(scopes.split()) == expected and len(scopes.split()) == 12
+                        state = query["state"][0]
                         with urlopen(f"http://127.0.0.1:8976/callback?code=local-test&state={state}") as response:
                             assert response.status == 200
                     assert process.wait(timeout=5) == (128 + interruption if interruption else 0)
@@ -75,7 +83,8 @@ with tempfile.TemporaryDirectory() as directory:
                     except ProcessLookupError:
                         pass
                     process.wait()
-        token_file = root / "kontext-skill" / "token.json"
+        token_file = token_path(env)
+        assert not (token_file.parent / "token.json").exists()
         assert json.loads(token_file.read_text())["access_token"] == "local-test"
         assert token_file.stat().st_mode & 0o077 == 0
         print("INT/TERM/HUP release port and temporary file; successful PKCE still saves token")

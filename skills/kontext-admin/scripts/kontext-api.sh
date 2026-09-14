@@ -3,30 +3,23 @@
 # Usage: kontext-api.sh METHOD PATH [JSON_BODY] [IF_MATCH]
 #   kontext-api.sh GET  /api/v1/policy/settings
 #   kontext-api.sh POST /api/v1/organizations/current/install-tokens '{"label":"ci"}'
-# Requires: KONTEXT_CLIENT_ID, KONTEXT_CLIENT_SECRET. Optional: KONTEXT_API_BASE.
+# Auth: browser approval, or KONTEXT_CLIENT_ID + KONTEXT_CLIENT_SECRET for CI.
 set -euo pipefail
 
-BASE="${KONTEXT_API_BASE:-https://api.kontext.security}"
-UA="kontext-skill/0.4.0"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/kontext-skill"
-TOKEN_FILE="$CACHE_DIR/token.json"
-# Request the full management scope set: Hydra narrows to the scopes actually
-# granted to this service account, and the API narrows again to its stored
-# grant. Without an explicit scope, client_credentials yields a scopeless token
-# and every request 401s. KONTEXT_SCOPES overrides if a narrower token is wanted.
-SCOPES="${KONTEXT_SCOPES:-management:providers:read management:providers:write management:applications:read management:applications:write management:policy:read management:policy:write management:directory:read management:directory:write management:settings:read management:settings:write management:logs:read management:logs:write management:deployments:read management:deployments:write}"
+source "$(dirname "$0")/kontext-context.sh"
 
+UA="kontext-skill/0.6.0"
 # Authentication is either interactive browser approval (default) or, when a
 # service-account secret is present, client credentials (CI / headless).
 fetch_token_client_credentials() {
   mkdir -p "$CACHE_DIR" && chmod 700 "$CACHE_DIR"
   local resp expires_in
-  resp=$(curl -sS --fail-with-body -X POST "$BASE/oauth2/token" \
-    -u "$KONTEXT_CLIENT_ID:$KONTEXT_CLIENT_SECRET" \
-    -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" \
+  resp=$(printf 'user = %s\n' "$(printf '%s' "$IDENTITY:$KONTEXT_CLIENT_SECRET" | jq -Rs .)" | \
+    curl --config - -sS --fail-with-body -X POST "$BASE/oauth2/token" \
+    -H "Content-Type: application/x-www-form-urlencoded" -H "Accept: application/json" -H "User-Agent: $UA" \
     --data-urlencode "grant_type=client_credentials" \
     --data-urlencode "audience=$BASE/api/v1" \
-    --data-urlencode "scope=$SCOPES")
+    --data-urlencode "scope=$SCOPES") || { printf '%s\n' "$resp" >&2; return 1; }
   expires_in=$(printf '%s' "$resp" | jq -r '.expires_in // 300')
   umask 177
   printf '{"access_token":%s,"expires_at":%s}\n' \
@@ -39,8 +32,8 @@ get_token() {
     jq -r '.access_token' "$TOKEN_FILE"
     return
   fi
-  if [ -n "${KONTEXT_CLIENT_ID:-}" ] && [ -n "${KONTEXT_CLIENT_SECRET:-}" ]; then
-    fetch_token_client_credentials              # CI / headless fallback
+  if [ -n "${KONTEXT_CLIENT_SECRET:-}" ]; then
+    fetch_token_client_credentials || return   # CI / headless fallback
   else
     "$(dirname "$0")/kontext-connect.sh" >&2    # interactive browser approval (default)
   fi
@@ -61,7 +54,7 @@ fi
 
 run() {
   local token args
-  token=$(get_token)
+  token=$(get_token) || return
   args=(-sS -X "$METHOD" "$BASE$API_PATH"
     -H "Authorization: Bearer $token" -H "Accept: application/json" -H "User-Agent: $UA"
     -w '\n%{http_code}')
