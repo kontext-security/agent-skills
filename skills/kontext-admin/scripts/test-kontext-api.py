@@ -15,7 +15,7 @@ identities = []
 token_requests = []
 expected_deleted = None
 families = ["providers", "applications", "policy", "directory", "settings", "logs", "deployments"]
-default_scopes = " ".join(f"management:{family}:{action}" for family in families for action in ["read", "write"])
+default_scopes = " ".join(f"management:{family}:{action}" for family in families for action in (["read"] if family in ["providers", "applications"] else ["read", "write"]))
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -27,7 +27,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/oauth2/token":
-            assert self.headers.get("User-Agent") == "kontext-skill/0.5.0"
+            assert self.headers.get("User-Agent") == "kontext-skill/0.6.0"
             payload = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
             if expected_deleted is not None:
                 assert not expected_deleted.exists(), "401 must remove the keyed file before minting"
@@ -139,6 +139,6 @@ with tempfile.TemporaryDirectory() as directory:
         result = subprocess.run(["bash", str(script), "GET", "/api/v1/policy"], env=missing_id, capture_output=True, text=True)
         assert result.returncode != 0 and "KONTEXT_CLIENT_ID is required with KONTEXT_CLIENT_SECRET" in result.stderr
         assert len(token_requests) == before_mints and len(identities) == before
-        print("Mint failure body and User-Agent, secret without ID, conditional writes, stdin credential escaping, 403 no retry, 401 re-mint, ID without secret, legacy removal, private files, 14 scopes, and normalized context isolation passed")
+        print("Mint failure body and User-Agent, secret without ID, conditional writes, stdin credential escaping, 403 no retry, 401 re-mint, ID without secret, legacy removal, private files, 12 scopes with legacy reads only, and normalized context isolation passed")
     finally:
         server.shutdown()

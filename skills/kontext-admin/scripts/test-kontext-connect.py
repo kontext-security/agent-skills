@@ -17,6 +17,7 @@ from urllib.request import urlopen
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
+        assert self.headers.get("User-Agent") == "kontext-skill/0.6.0"
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
         self.send_response(200)
         self.end_headers()
@@ -68,8 +69,8 @@ with tempfile.TemporaryDirectory() as directory:
                         query = parse_qs(urlparse(auth_url).query)
                         assert query["client_id"] == ["kontext-cli"], "ID without secret must stay PKCE"
                         scopes = query["scope"][0]
-                        expected = {f"management:{family}:{action}" for family in ["providers", "applications", "policy", "directory", "settings", "logs", "deployments"] for action in ["read", "write"]}
-                        assert set(scopes.split()) == expected and len(scopes.split()) == 14
+                        expected = {f"management:{family}:{action}" for family in ["providers", "applications", "policy", "directory", "settings", "logs", "deployments"] for action in (["read"] if family in ["providers", "applications"] else ["read", "write"])}
+                        assert set(scopes.split()) == expected and len(scopes.split()) == 12
                         state = query["state"][0]
                         with urlopen(f"http://127.0.0.1:8976/callback?code=local-test&state={state}") as response:
                             assert response.status == 200

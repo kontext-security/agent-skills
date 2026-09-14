@@ -8,7 +8,7 @@ set -euo pipefail
 
 source "$(dirname "$0")/kontext-context.sh"
 
-UA="kontext-skill/0.5.0"
+UA="kontext-skill/0.6.0"
 # Authentication is either interactive browser approval (default) or, when a
 # service-account secret is present, client credentials (CI / headless).
 fetch_token_client_credentials() {
