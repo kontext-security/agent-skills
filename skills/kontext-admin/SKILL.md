@@ -1,8 +1,8 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.6.0"
-description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, authorization decisions, traces, and managed-endpoint releases. Use when asked to connect to Kontext, connect Entra/SCIM, inspect policy decisions or traces, change Kontext settings, or download Kontext releases.
+  version: "0.7.0"
+description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, and managed-endpoint releases. Use when asked to connect to Kontext, connect Entra/SCIM, propose or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
 # Kontext admin
@@ -19,7 +19,7 @@ scripts/kontext-api.sh GET /api/v1/policy/deployment
 
 The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
 
-Connect once: permissions live under **Settings → Agent access**, are read-only by default, and changes apply to the next request without reconnecting. The five areas are **Policies, Directory, Settings, Logs, and Deployments**. Use service accounts when each agent needs different access or when running in CI.
+Connect once: permissions live under **Settings → Agent access** and changes apply to the next request without reconnecting. New workspaces start with **Policy author** (every read plus policy write), so a connected agent can propose policies right away. Workspaces created earlier may still be read-only; there an admin switches the preset to Policy author before policy writes work. The five areas are **Policies, Directory, Settings, Logs, and Deployments**. Use service accounts when each agent needs different access or when running in CI.
 
 The dashboard prompt is **"Connect to Kontext and show me my policies."** Complete it with reads only:
 
@@ -58,9 +58,11 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Org settings | `GET/PATCH /policy/settings` (`policyEnabled`, `payloadCaptureMode`) | `management:settings:read` / `:write` |
 | Policy state and history | `GET /policy/deployment` (both slots + ETag), `GET /policy`, `GET /policy/versions`, `GET /policy/versions/{id}`, `GET /policy/rule-templates` | `management:policy:read` |
 | Policy actions | `POST /policy/actions`, `POST /policy/validations` | `management:policy:write` |
+| Policy-set versions | `POST /policy/deployment/promote` (enforce the reviewed observing version), `POST /policy/deployment/rollback` (enforce an earlier version again) | `management:policy:write` |
 | Policy evidence | `POST /policy/replay`, `GET /policy/blocked?days=7` | `management:policy:read` |
 | Decisions | `GET /decisions` (filters: provider, decisionResult, decisionCategory, reasonCode, riskLevel, installationId, sessionId, from/to; cursor pagination), `GET /decisions/{id}` | `management:logs:read` |
 | Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
+| Risks | `GET /enterprise/dashboard/risk/summary` (from/to), `GET /enterprise/dashboard/risk/findings` (from/to, severity, riskCategory, agent, principal, decision; cursor pagination), `GET /enterprise/dashboard/execution/failures` (from/to, toolName) | `management:logs:read` |
 | Releases | `GET /deployments/releases`, `GET /deployments/releases/latest`, `POST /deployments/releases/{version}/artifacts/{kind}/download-url` | `management:deployments:read` |
 | Install tokens | `GET/POST /organizations/current/install-tokens`, `POST …/{sha256}/revoke` | `management:deployments:read` / `:write` |
 
@@ -93,6 +95,10 @@ recorded calls would have done under the candidate.
 1. **Read both slots and the deployment ETag.** All paths below start with `/api/v1`.
    Read `/policy/deployment`, then `/policy/versions/{id}` for each non-null slot.
    Read `/policy/rule-templates` for available templates and `/policy/versions` for history.
+   Every save is an immutable version numbered v1, v2, … per organization; each
+   listed version has a `state` (`enforced`, `observing`, `paused` or `past`) and
+   the `changes` (policy IDs added, removed or modified) against its parent. Refer
+   to versions by number when talking to the user.
    The helper writes successful response headers when `KONTEXT_RESPONSE_HEADERS`
    is set. Failed requests leave the file unchanged:
 
@@ -143,7 +149,28 @@ recorded calls would have done under the candidate.
    Remove with `{"action":"delete","policyId":"...","where":"observing"}` or
    `"where":"enforced"`; deleting an enforced policy also removes its observing copies.
 
-5. **Verify the result.** Re-read `/policy/deployment` and `/policy/versions`.
+   When the user has reviewed the whole observing version and wants all of it
+   enforced, promote the version instead of enforcing policies one by one:
+
+   ```bash
+   scripts/kontext-api.sh POST /api/v1/policy/deployment/promote \
+     '{"observingVersionId":"<observing ID you reviewed>"}' "$etag"
+   ```
+
+   Promote creates no new version. It fails with 409
+   `observing_changed` if a different version is observing now (read it, replay
+   it, and present it again) and 409 `nothing_observing` if nothing is. In an
+   observe-only workspace it switches the workspace to enforcing, so say so before
+   promoting; a paused workspace stays paused.
+
+5. **Roll back if needed.** To enforce an earlier version again, send
+   `{"policyVersionId":"<earlier version ID>"}` to `POST /policy/deployment/rollback`
+   with the current ETag. It creates no new version and leaves the observing
+   version as it is. Present the version number and its `changes` first. It
+   answers 409 `already_enforced` for the enforced version and 422 for a version
+   that is no longer valid.
+
+6. **Verify the result.** Re-read `/policy/deployment` and `/policy/versions`.
    Check `/policy/blocked?days=7` and `/decisions?from=<change time>` after a relevant
    test call. History records one origin per action. A successful API write does
    not prove that a Mac has checked in and applied it.
@@ -155,11 +182,47 @@ read deployment and History to determine whether the transaction committed.
 Invalid Cedar returns 422 with diagnostics, unknown IDs return 404, and policy-ID
 collisions or conflicting states return 409.
 
+Promote and rollback accept the deployment ETag as an optional `If-Match`;
+always send it.
+
 **Never send `PUT /policy/deployment` from this skill.** It controls rollout mode
 for the whole organization and remains a dashboard workflow. Do not use
 `PUT /policy` for per-policy changes either; `/policy/actions` saves and deploys
 atomically. Policy write access still technically permits those lower-level API
 routes; the Policy author preset does not separate authoring from enforcement.
+
+### Propose policies from logs and risks
+
+The onboarding prompt is **"Check logs, combine with risks, and propose
+policies."** Treat it, and any request like it, as this workflow. Proposals land in
+the observing version; nothing is enforced unless the user says so.
+
+1. **Connect and read the current state:** `/policy/deployment`, each non-null
+   `/policy/versions/{id}`, and `/policy/versions`. Note which policy IDs are
+   already enforced or observing so you do not propose duplicates.
+2. **Read what agents actually do.** Use `GET /traces/stats?period=30d` and
+   `GET /decisions` over the last 30 days (`from`/`to`) to see which tools and
+   resources are used and what was already blocked. Read `GET /enterprise/dashboard/risk/summary` and
+   `…/risk/findings` for the same window to see flagged calls by severity and
+   category. Summarize the top resources and risks for the user.
+3. **Read the preset catalog:** `GET /policy/rule-templates`. Prefer a preset when
+   one covers a risk; check `availability`, `coverage` and `knownGaps`.
+4. **Propose.** Present a short list: for each policy, the risk or usage it
+   answers, preset ID or custom raw policy, and scope (all agents, one agent, one
+   endpoint). Write custom policies as one static Cedar statement with a unique
+   `@id("custom:...")` and validate the full candidate text through
+   `POST /policy/validations` before proposing it.
+5. **Add the accepted ones to observing** with `POST /policy/actions`
+   (`"action":"add"`), one action per policy, following
+   [Change Cedar policy safely](#change-cedar-policy-safely) for ETags and errors.
+   Each add creates the next observing version.
+6. **Replay** the observing version over 7, 14 or 30 days and report what it would
+   have blocked. Enforce only when the user asks: per policy with `enforce`, or the
+   whole reviewed version with promote.
+
+On a 403 `insufficient_scope` for policy write, the workspace is still read-only:
+report it as described above and ask an admin to choose **Policy author** under
+**Settings → Agent access**.
 
 ### Verify policy behavior through decisions
 
