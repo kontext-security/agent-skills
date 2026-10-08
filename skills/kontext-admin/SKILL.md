@@ -166,7 +166,9 @@ recorded calls would have done under the candidate.
 5. **Roll back if needed.** To enforce an earlier version again, send
    `{"policyVersionId":"<earlier version ID>"}` to `POST /policy/deployment/rollback`
    with the current ETag. It creates no new version and leaves the observing
-   version as it is. Present the version number and its `changes` first. It
+   version as it is. A version's `changes` describe it against its own parent, not
+   against what is enforced now, so read both versions with `/policy/versions/{id}`
+   and present the policies the rollback would remove and restore. It
    answers 409 `already_enforced` for the enforced version and 422 for a version
    that is no longer valid.
 
@@ -204,7 +206,10 @@ the observing version; nothing is enforced unless the user says so.
    `GET /decisions` over the last 30 days (`from`/`to`) to see which tools and
    resources are used and what was already blocked. Read `GET /enterprise/dashboard/risk/summary` and
    `…/risk/findings` for the same window to see flagged calls by severity and
-   category. Summarize the top resources and risks for the user.
+   category. Summarize the top resources and risks for the user. In demo mode
+   (the dashboard shows demo data) the risk, replay and blocked reads return the
+   shared demo workspace while decisions, traces and writes stay on this one; ask
+   the user whether demo mode is on and have them turn it off before proposing.
 3. **Read the preset catalog:** `GET /policy/rule-templates`. Prefer a preset when
    one covers a risk; check `availability`, `coverage` and `knownGaps`.
 4. **Propose.** Present a short list: for each policy, the risk or usage it
