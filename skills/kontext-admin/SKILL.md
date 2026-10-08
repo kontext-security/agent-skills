@@ -220,9 +220,12 @@ the observing version; nothing is enforced unless the user says so.
    have blocked. Enforce only when the user asks: per policy with `enforce`, or the
    whole reviewed version with promote.
 
-On a 403 `insufficient_scope` for policy write, the workspace is still read-only:
-report it as described above and ask an admin to choose **Policy author** under
-**Settings → Agent access**.
+On a 403 `insufficient_scope` for policy write, report `missingScopes` and the
+server's `hint` verbatim as described above. When you connected through browser
+approval with the default scopes, the likely cause is a workspace still set to
+read-only: an admin can choose **Policy author** under **Settings → Agent access**.
+A service account or a narrower `KONTEXT_SCOPES` request has its own grants, which
+that setting does not change.
 
 ### Verify policy behavior through decisions
 
