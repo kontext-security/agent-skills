@@ -129,7 +129,8 @@ recorded calls would have done under the candidate.
    the top-level scope fields, for example `[{"agentId":"openai-codex"}]`.
    Some presets need a companion guard; the server adds it in the same action
    and lists it in the response's `message` and `changedPolicyIds`, and enforcing
-   the preset enforces its guard too. Never add or enforce a companion yourself.
+   the preset enforces its guard too, so you never add or enforce a companion
+   separately.
    A 409 `policy_already_present` means the policy is already in the set (often
    a companion added earlier): treat it as done, not as an error, and keep the
    last good ETag, since nothing changed. After a successful action,
@@ -151,8 +152,8 @@ recorded calls would have done under the candidate.
    to `/policy/actions` with the current deployment ETag. This promotes only
    that policy's blocks; other changes keep observing. This explicit action may
    switch observe → enforce. In a paused workspace it changes the selection but
-   keeps enforcement paused. Companion guards are separate policies: review and
-   explicitly enforce them too when the template needs them.
+   keeps enforcement paused. Enforcing a preset also enforces its observing
+   companion guard; the response's `changedPolicyIds` lists both.
    Stop with `{"action":"stop","policyId":"..."}` to move it back to observing.
    Remove with `{"action":"delete","policyId":"...","where":"observing"}` or
    `"where":"enforced"`; deleting an enforced policy also removes its observing copies.
@@ -257,8 +258,8 @@ asks for enforcement, in this prompt or a later one.
    catalog's `default-permit` cedar. Fix and validate again
    until `valid` is true. Treat warnings as problems too: `unsupported_tool_id`
    means the policy would never match, and `forbid_may_fail_open` means calls
-   without a tier slip past unless the provider's block-unrecognized preset is
-   also in the set, so add that preset. Drop a policy you cannot make valid and
+   without a tier slip past: add the provider's block-unrecognized preset when
+   the catalog has one, otherwise match the tool by resource instead. Drop a policy you cannot make valid and
    say why.
 8. **Present the list,** most important first: for each policy, the logged usage
    or risk it answers (with counts), preset ID or the custom raw policy, scope
@@ -273,15 +274,15 @@ asks for enforcement, in this prompt or a later one.
    it as done and continue with your last good ETag.
 10. **Replay** the resulting observing version over 30 days (or 7 or 14) and
     report per policy what it would have blocked and what was not replayable.
-11. **Finish.** Tell the user which version is observing (by number) and that
-    nothing blocks yet. When the user asked for enforcement, promote that
-    version (if it already held changes before this run, list those too, since
-    promote enforces all of it; to enforce only yours, use `enforce` per policy) as described in step 4 of
-    [Change Cedar policy safely](#change-cedar-policy-safely), after saying that
-    an observe-only workspace switches to enforcing, and confirm in your final
-    message which version is enforced now. Otherwise end by telling the
-    user they can say **"Enforce them"** to promote it. Either way, say that
-    each Mac applies a change at its next check-in.
+11. **Finish.** If the user did not ask for enforcement, say which version is
+    observing (by number), that nothing blocks yet, and that they can say
+    **"Enforce them"** to promote it. If they asked, in this prompt or later,
+    promote that version as described in step 4 of
+    [Change Cedar policy safely](#change-cedar-policy-safely). Promote enforces
+    the whole version, so first list any changes it held before this run; to
+    enforce only yours, use `enforce` per policy instead. Say that an
+    observe-only workspace now enforces, and name the enforced version. Either
+    way, say that each Mac applies a change at its next check-in.
 
 On a 403 `insufficient_scope` for policy write, report `missingScopes` and the
 server's `hint` verbatim as described above. When you connected through browser
