@@ -11,7 +11,8 @@
 #
 # No secret is ever entered or displayed.
 # Optional env: KONTEXT_API_BASE (default https://api.kontext.security),
-# KONTEXT_SCOPES, KONTEXT_CONNECT_FLOW=pkce|device.
+# KONTEXT_SCOPES, KONTEXT_CONNECT_FLOW=pkce|device, KONTEXT_CONNECT_TIMEOUT
+# (seconds to wait for browser approval, default 900).
 set -euo pipefail
 
 # This script always connects the human through the built-in public client.
@@ -19,9 +20,13 @@ unset KONTEXT_CLIENT_ID KONTEXT_CLIENT_SECRET
 source "$(dirname "$0")/kontext-context.sh"
 
 CLIENT_ID="$IDENTITY"
-UA="kontext-skill/0.7.1"
+UA="kontext-skill/0.8.0"
 CALLBACK_PORT=8976
 FLOW="${KONTEXT_CONNECT_FLOW:-pkce}"
+# Approval often goes through a relayed URL or a second device, so wait long.
+TIMEOUT="${KONTEXT_CONNECT_TIMEOUT:-900}"
+case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=0 ;; *) TIMEOUT=$((10#$TIMEOUT)) ;; esac
+[ "$TIMEOUT" -gt 0 ] || { echo "kontext-connect: KONTEXT_CONNECT_TIMEOUT must be a positive number of seconds" >&2; exit 1; }
 
 command -v jq >/dev/null || { echo "kontext-connect: jq is required" >&2; exit 1; }
 
@@ -36,6 +41,12 @@ save_token() { # $1 = token endpoint JSON response
     "$(printf '%s' "$1" | jq '.access_token')" \
     "$(( $(date +%s) + expires_in - 30 ))" > "$TOKEN_FILE"
   echo "  Connected. You can run Kontext commands now."
+}
+
+wait_label() {
+  local n=$TIMEOUT unit=second
+  [ $((n % 60)) -eq 0 ] && { n=$((n / 60)); unit=minute; }
+  [ "$n" -eq 1 ] && echo "1 $unit" || echo "$n ${unit}s"
 }
 
 open_url() { # best effort; caller prints the URL either way
@@ -66,7 +77,7 @@ connect_pkce() {
   state=$(openssl rand -hex 16)
 
   # Loopback listener: waits for exactly one /callback hit, prints its params
-  # as JSON, exits. 5 minute timeout.
+  # as JSON, exits after TIMEOUT seconds.
   trap cleanup_pkce EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
@@ -85,8 +96,8 @@ connect_pkce() {
     });
     srv.on("error", (e) => { console.log(JSON.stringify({ error: "listener", error_description: String(e.message) })); process.exit(1); });
     srv.listen(port, "127.0.0.1");
-    setTimeout(() => { console.log(JSON.stringify({ error: "timeout" })); process.exit(1); }, 300000);
-  ' "$CALLBACK_PORT" > "$result_file" &
+    setTimeout(() => { console.log(JSON.stringify({ error: "timeout" })); process.exit(1); }, Number(process.argv[2]) * 1000);
+  ' "$CALLBACK_PORT" "$TIMEOUT" > "$result_file" &
   listener_pid=$!
   sleep 0.3
   kill -0 "$listener_pid" 2>/dev/null || { cat "$result_file" >&2; echo "kontext-connect: could not listen on 127.0.0.1:$CALLBACK_PORT (port in use?)" >&2; exit 1; }
@@ -99,14 +110,14 @@ connect_pkce() {
   echo "  $auth_url"
   echo ""
   open_url "$auth_url"
-  echo "  Waiting for approval…"
+  echo "  Waiting for approval (up to $(wait_label))…"
 
   wait "$listener_pid" || true
   listener_pid=""
   local cb code cb_state err
   cb=$(cat "$result_file"); rm -f "$result_file"
   err=$(printf '%s' "$cb" | jq -r '.error // empty')
-  [ "$err" = "timeout" ] && { echo "kontext-connect: timed out waiting for browser approval — run connect again." >&2; exit 1; }
+  [ "$err" = "timeout" ] && { echo "kontext-connect: no approval within $(wait_label); the approval link has stopped working. Run connect again for a new link." >&2; exit 1; }
   [ -n "$err" ] && { echo "kontext-connect: $err: $(printf '%s' "$cb" | jq -r '.error_description // empty')" >&2; exit 1; }
   code=$(printf '%s' "$cb" | jq -r '.code // empty')
   cb_state=$(printf '%s' "$cb" | jq -r '.state // empty')

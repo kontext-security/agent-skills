@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        assert self.headers.get("User-Agent") == "kontext-skill/0.7.1"
+        assert self.headers.get("User-Agent") == "kontext-skill/0.8.0"
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
         self.send_response(200)
         self.end_headers()
@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory() as directory:
     opener.chmod(0o700)
     server = HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
+    env = {**{k: v for k, v in os.environ.items() if k != "KONTEXT_CONNECT_TIMEOUT"}, "PATH": directory + os.pathsep + os.environ["PATH"],
            "TMPDIR": str(scratch), "XDG_CACHE_HOME": directory,
            "KONTEXT_CONNECT_FLOW": "pkce", "KONTEXT_CLIENT_ID": "alpha", "KONTEXT_CLIENT_SECRET": "",
            "KONTEXT_API_BASE": f"http://127.0.0.1:{server.server_port}"}
@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory() as directory:
                     for _ in range(100):
                         log.seek(0)
                         output = log.read()
-                        if "Waiting for approval" in output:
+                        if "Waiting for approval (up to 15 minutes)" in output:
                             break
                         assert process.poll() is None, output
                         time.sleep(0.05)
@@ -83,10 +83,20 @@ with tempfile.TemporaryDirectory() as directory:
                     except ProcessLookupError:
                         pass
                     process.wait()
+        with (root / "timeout.log").open("w+") as log:
+            result = subprocess.run(["bash", str(script)], env={**env, "KONTEXT_CONNECT_TIMEOUT": "1"}, stdout=log, stderr=log, timeout=10)
+            log.seek(0)
+            output = log.read()
+            assert result.returncode == 1, output
+            assert "Waiting for approval (up to 1 second)" in output and "no approval within 1 second" in output, output
+            assert_port_free()
+            assert not list(scratch.iterdir()), "Callback temporary file leaked"
+        result = subprocess.run(["bash", str(script)], env={**env, "KONTEXT_CONNECT_TIMEOUT": "soon"}, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 1 and "must be a positive number of seconds" in result.stderr, result.stderr
         token_file = token_path(env)
         assert not (token_file.parent / "token.json").exists()
         assert json.loads(token_file.read_text())["access_token"] == "local-test"
         assert token_file.stat().st_mode & 0o077 == 0
-        print("INT/TERM/HUP release port and temporary file; successful PKCE still saves token")
+        print("INT/TERM/HUP release port and temporary file; 15 minute default and custom approval timeout; successful PKCE still saves token")
     finally:
         server.shutdown()
