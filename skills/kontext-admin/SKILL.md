@@ -269,9 +269,9 @@ asks for enforcement, in this prompt or a later one.
    `:endpoint:` into it; pass the scope as `endpointId` or `agentId` instead.
 7. **Validate every custom policy** before adding it:
    `POST /policy/validations` with `{"policyText":"<text of the version your add
-   builds on>\n\n<your statement>"}`. That version is the observing one (in an
-   observe-only workspace, `policyVersionId`); with no version yet, use the
-   catalog's `default-permit` cedar. Fix and validate again
+   builds on>\n\n<your statement>"}`. That is the observing version (in an
+   observe-only workspace, `policyVersionId`), else the enforced version, and
+   only when neither exists the catalog's `default-permit` cedar. Fix and validate again
    until `valid` is true. Treat warnings as problems too: `unsupported_tool_id`
    means the policy would never match, and `forbid_may_fail_open` means calls
    without a tier slip past: add the provider's block-unrecognized preset when
