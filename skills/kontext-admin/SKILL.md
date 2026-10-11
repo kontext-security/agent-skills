@@ -259,6 +259,10 @@ asks for enforcement, in this prompt or a later one.
      like the tier presets do, and never build an ID from a tool name.
    - Any other tool keeps the agent's own tool name, as `toolName` shows it in
      the decisions, for example `Kontext::Tool::"mcp__linear__delete_issue"`.
+     Exception: while the enforced or observing text still names
+     `Kontext::Tool::"unknown"`, Macs report every such tool as `unknown`, so a
+     named rule would never match. Do not write one then; tell the user the set
+     must stop naming `unknown` first and let them decide.
    Whichever you use, validation in the next step is the check: a tool ID it
    flags `unsupported_tool_id` never matches. Do not add an `@id` that collides
    with an existing ID or a preset's prefix, and do not write `:agent:` or
@@ -289,11 +293,13 @@ asks for enforcement, in this prompt or a later one.
     report per policy what it would have blocked and what was not replayable.
 11. **Finish.** If the user did not ask for enforcement, say which version is
     observing (by number), that nothing blocks yet, and that they can say
-    **"Enforce them"** to promote it. If they asked, in this prompt or later,
-    promote that version as described in step 4 of
-    [Change Cedar policy safely](#change-cedar-policy-safely). Promote enforces
-    the whole version, so first list any changes it held before this run; to
-    enforce only yours, use `enforce` per policy instead. Say that an
+    **"Enforce them"**. If they asked, in this prompt or later,
+    enforce what this run added. When the observing version holds only this
+    run's changes, promote it as described in step 4 of
+    [Change Cedar policy safely](#change-cedar-policy-safely). When it also held
+    earlier changes, promote enforces those too, so enforce this run's policies
+    one by one with `enforce` instead, unless the user explicitly approved the
+    whole version after you listed the earlier changes. Say that an
     observe-only workspace now enforces, and name the enforced version. Either
     way, say that each Mac applies a change at its next check-in.
 
