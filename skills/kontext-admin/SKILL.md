@@ -302,7 +302,9 @@ asks for enforcement, in this prompt or a later one.
     added as it appears in the version text (scoped copies carry their
     `:endpoint:` or `:agent:` suffix). A base preset ID enforces every copy of
     that preset, including older ones, so use it only when no other copy
-    exists. Do this unless the user explicitly approved the
+    exists. Include any block-unrecognized guard a custom policy of this run
+    relies on, even if it was already observing, since nothing enforces it
+    for a custom policy. Do this unless the user explicitly approved the
     whole version after you listed the earlier changes. Say that an
     observe-only workspace now enforces, and name the enforced version. Either
     way, say that each Mac applies a change at its next check-in.
