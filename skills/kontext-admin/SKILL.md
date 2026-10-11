@@ -298,7 +298,11 @@ asks for enforcement, in this prompt or a later one.
     run's changes, promote it as described in step 4 of
     [Change Cedar policy safely](#change-cedar-policy-safely). When it also held
     earlier changes, promote enforces those too, so enforce this run's policies
-    one by one with `enforce` instead, unless the user explicitly approved the
+    one by one with `enforce` instead, passing the exact `@id` of each copy you
+    added as it appears in the version text (scoped copies carry their
+    `:endpoint:` or `:agent:` suffix). A base preset ID enforces every copy of
+    that preset, including older ones, so use it only when no other copy
+    exists. Do this unless the user explicitly approved the
     whole version after you listed the earlier changes. Say that an
     observe-only workspace now enforces, and name the enforced version. Either
     way, say that each Mac applies a change at its next check-in.
