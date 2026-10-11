@@ -1,8 +1,8 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.7.1"
-description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, and managed-endpoint releases. Use when asked to connect to Kontext, connect Entra/SCIM, propose or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
+  version: "0.8.0"
+description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
 # Kontext admin
@@ -17,7 +17,7 @@ You are operating a Kontext organization on behalf of one of its admins, through
 scripts/kontext-api.sh GET /api/v1/policy/deployment
 ```
 
-The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
+The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The helper waits up to 15 minutes for approval (`KONTEXT_CONNECT_TIMEOUT` in seconds changes that), so run it with a command timeout of at least that long, or in the background, and do not cancel it while the user is approving: a stopped helper shows "127.0.0.1 refused to connect" in the browser. If that happens or the wait ends, run it again and relay the new URL. The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
 
 Connect once: permissions live under **Settings → Agent access** and changes apply to the next request without reconnecting. New workspaces start with **Policy author** (every read plus policy write), so a connected agent can propose policies right away. Workspaces created earlier may still be read-only; there an admin switches the preset to Policy author before policy writes work. The five areas are **Policies, Directory, Settings, Logs, and Deployments**. Use service accounts when each agent needs different access or when running in CI.
 
@@ -36,11 +36,12 @@ scripts/kontext-connect.sh    # opens the browser, waits for approval
 Optional environment:
 
 ```
-KONTEXT_API_BASE       optional, default https://api.kontext.security
-KONTEXT_CONNECT_FLOW   optional, "device" for the device-code flow (RFC 8628):
-                       prints a URL + short code to approve on another machine
-                       (SSH boxes). Requires a deployment with the device grant
-                       enabled (dev/self-hosted).
+KONTEXT_API_BASE        optional, default https://api.kontext.security
+KONTEXT_CONNECT_TIMEOUT optional, seconds to wait for browser approval (default 900)
+KONTEXT_CONNECT_FLOW    optional, "device" for the device-code flow (RFC 8628):
+                        prints a URL + short code to approve on another machine
+                        (SSH boxes). Requires a deployment with the device grant
+                        enabled (dev/self-hosted).
 ```
 
 **CI / headless** (no human to approve): set `KONTEXT_CLIENT_ID` + `KONTEXT_CLIENT_SECRET` from a service account (dashboard → Settings → Agent access → Service accounts). The helper uses client credentials. Choose the granted scopes with a preset such as **Policy author**; `KONTEXT_SCOPES` remains an optional narrower request. The creator must remain an organization admin. Service accounts keep their own grants and are not limited by the connected-agent setting.
@@ -64,6 +65,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
 | Risks | `GET /enterprise/dashboard/risk/summary` (from/to), `GET /enterprise/dashboard/risk/findings` (from/to, severity, riskCategory, agent, principal, decision; cursor pagination), `GET /enterprise/dashboard/execution/failures` (from/to, toolName) | `management:logs:read` |
 | Demo mode | `GET /demo-data/mode` (returns `{"demoMode": true}` or `false`; read-only) | `management:logs:read` |
+| Endpoints (Macs) | `GET /organizations/current/directory/reconciliation` (every managed endpoint: `installationId`, `deviceLabel`, `userEmail`, `lastSeenAt`, directory match) | `management:directory:read` |
 | Releases | `GET /deployments/releases`, `GET /deployments/releases/latest`, `POST /deployments/releases/{version}/artifacts/{kind}/download-url` | `management:deployments:read` |
 | Install tokens | `GET/POST /organizations/current/install-tokens`, `POST …/{sha256}/revoke` | `management:deployments:read` / `:write` |
 
@@ -125,7 +127,12 @@ recorded calls would have done under the candidate.
    `anthropic-claude-code` or `openai-codex` (use the catalog/OpenAPI enum).
    To add copies for several scopes in one transaction, use `scopes` instead of
    the top-level scope fields, for example `[{"agentId":"openai-codex"}]`.
-   The response names any companion guards added. After a successful action,
+   Some presets need a companion guard; the server adds it in the same action
+   and lists it in the response's `message` and `changedPolicyIds`, and enforcing
+   the preset enforces its guard too. Never add or enforce a companion yourself.
+   A 409 `policy_already_present` means the policy is already in the set (often
+   a companion added earlier): treat it as done, not as an error, and keep the
+   last good ETag, since nothing changed. After a successful action,
    refresh `etag` from its response headers before the next action. Only use
    ETags from successful deployment reads or policy actions, never error responses
    or other endpoints. After a 422, fix the policy and retain the last deployment
@@ -197,35 +204,84 @@ routes; the Policy author preset does not separate authoring from enforcement.
 ### Propose policies from logs and risks
 
 The onboarding prompt is **"Check logs, combine with risks, and propose
-policies."** Treat it, and any request like it, as this workflow. Proposals land in
-the observing version; nothing is enforced unless the user says so.
+policies."** Treat it, and any request like it, as this workflow, and run every
+step below in one go. The prompt is the request to write: adding to the
+observing version blocks nothing, so present the list and add it in the same run
+instead of stopping to ask for acceptance. Nothing is enforced unless the user
+asks for enforcement, in this prompt or a later one.
 
-1. **Connect and read the current state:** `/policy/deployment`, each non-null
+1. **Read the current state:** `/policy/deployment` (keep its ETag), each non-null
    `/policy/versions/{id}`, and `/policy/versions`. Note which policy IDs are
    already enforced or observing so you do not propose duplicates.
-2. **Read what agents actually do.** Use `GET /traces/stats?period=30d` and
-   `GET /decisions` over the last 30 days (`from`/`to`) to see which tools and
-   resources are used and what was already blocked. Read `GET /enterprise/dashboard/risk/summary` and
-   `…/risk/findings` for the same window to see flagged calls by severity and
-   category. Before relying on these reads, call `GET /demo-data/mode`. When
-   `demoMode` is `true`, the risk, replay and blocked reads return the shared demo
-   workspace while decisions, traces and writes stay on this one: tell the user
-   that demo mode is on and have them turn it off in the dashboard before
-   proposing. Summarize the top resources and risks for the user.
-3. **Read the preset catalog:** `GET /policy/rule-templates`. Prefer a preset when
-   one covers a risk; check `availability`, `coverage` and `knownGaps`.
-4. **Propose.** Present a short list: for each policy, the risk or usage it
-   answers, preset ID or custom raw policy, and scope (all agents, one agent, one
-   endpoint). Write custom policies as one static Cedar statement with a unique
-   `@id("custom:...")` and validate the full candidate text through
-   `POST /policy/validations` before proposing it.
-5. **Add the accepted ones to observing** with `POST /policy/actions`
-   (`"action":"add"`), one action per policy, following
-   [Change Cedar policy safely](#change-cedar-policy-safely) for ETags and errors.
-   Each add creates the next observing version.
-6. **Replay** the observing version over 7, 14 or 30 days and report what it would
-   have blocked. Enforce only when the user asks: per policy with `enforce`, or the
-   whole reviewed version with promote.
+2. **Check demo mode first:** `GET /demo-data/mode`. When `demoMode` is `true`,
+   the risk, replay and blocked reads return the shared demo workspace while
+   decisions, traces and writes stay on this one. Stop: tell the user that demo
+   mode is on and to turn it off in the dashboard, then run the prompt again.
+   Never propose from demo data.
+3. **Read what agents actually do** over the last 30 days: `GET /traces/stats?period=30d`,
+   `GET /decisions` with `from`/`to` (follow `nextCursor`; each item names
+   `provider`, `toolName`, `operation`, `decisionResult`, `installationId`), and
+   `GET /enterprise/dashboard/risk/summary` plus `…/risk/findings` for the same
+   window. Combine them: which tools and resources are used, by which endpoints,
+   what was flagged and how severely, and what was already blocked.
+4. **List the endpoints:** `GET /organizations/current/directory/reconciliation`
+   returns every managed endpoint (Mac) with its `installationId`, `deviceLabel`,
+   `userEmail` and `lastSeenAt`. If it answers 403, use the distinct
+   `installationId`s from the decisions instead and say so. Use this list to
+   decide whether a policy should apply to all endpoints or to one
+   (`endpointId` is the `installationId`), and to tell the user which Macs have
+   not checked in recently and so will not pick up changes soon.
+5. **Read the preset catalog:** `GET /policy/rule-templates`. Each template
+   carries `availability`, `coverage`, `knownGaps` and its raw `cedar`. Prefer a
+   preset when one covers a risk or a write-capable tool you saw in use. Some
+   presets need a companion guard (for example a block-unrecognized operations
+   policy); the server adds it with the preset, so never propose or add a
+   companion on its own.
+6. **Write custom raw policies for what no preset covers.** Look for it before
+   concluding the presets are enough: logs usually show something specific to
+   this workspace, such as a particular MCP tool, a provider no preset names, or
+   risky calls coming from one endpoint. Write each as exactly one static
+   `forbid` statement with a unique `@id("custom:...")` and an
+   `@description("...")`, modelled on the catalog's raw `cedar`, with
+   `action == Kontext::Action::"ToolUse"`. The resource is a `Kontext::Tool`:
+   `"shell"` for shell commands, `"<provider>-mcp/<tool>"` for GitHub, Atlassian
+   and HubSpot MCP tools (for example `github-mcp/merge_pull_request`,
+   `atlassian-mcp/createJiraIssue`), and the agent's own tool name for any other
+   tool, as `toolName` shows it in the decisions. Do not add an `@id` that collides
+   with an existing ID or a preset's prefix, and do not write `:agent:` or
+   `:endpoint:` into it; pass the scope as `endpointId` or `agentId` instead.
+7. **Validate every custom policy** before adding it:
+   `POST /policy/validations` with `{"policyText":"<text of the version your add
+   builds on>\n\n<your statement>"}`. That version is the observing one (in an
+   observe-only workspace, `policyVersionId`); with no version yet, use the
+   catalog's `default-permit` cedar. Fix and validate again
+   until `valid` is true. Treat warnings as problems too: `unsupported_tool_id`
+   means the policy would never match, and `forbid_may_fail_open` means calls
+   without a tier slip past unless the provider's block-unrecognized preset is
+   also in the set, so add that preset. Drop a policy you cannot make valid and
+   say why.
+8. **Present the list,** most important first: for each policy, the logged usage
+   or risk it answers (with counts), preset ID or the custom raw policy, scope
+   (all endpoints, one endpoint, one agent), and what it would block. Keep it to
+   the few policies that matter; three to six is typical.
+9. **Add them to observing** right away, one `POST /policy/actions`
+   `{"action":"add",...}` per policy, following
+   [Change Cedar policy safely](#change-cedar-policy-safely) for ETags and
+   errors. Before each add, skip any ID that an earlier add already put in the
+   set: the response's `changedPolicyIds` lists companion guards added with a
+   preset. A 409 `policy_already_present` means it is already there, so treat
+   it as done and continue with your last good ETag.
+10. **Replay** the resulting observing version over 30 days (or 7 or 14) and
+    report per policy what it would have blocked and what was not replayable.
+11. **Finish.** Tell the user which version is observing (by number) and that
+    nothing blocks yet. When the user asked for enforcement, promote that
+    version (if it already held changes before this run, list those too, since
+    promote enforces all of it; to enforce only yours, use `enforce` per policy) as described in step 4 of
+    [Change Cedar policy safely](#change-cedar-policy-safely), after saying that
+    an observe-only workspace switches to enforcing, and confirm in your final
+    message which version is enforced now. Otherwise end by telling the
+    user they can say **"Enforce them"** to promote it. Either way, say that
+    each Mac applies a change at its next check-in.
 
 On a 403 `insufficient_scope` for policy write, report `missingScopes` and the
 server's `hint` verbatim as described above. When you connected through browser
