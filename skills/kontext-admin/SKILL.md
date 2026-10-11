@@ -247,11 +247,19 @@ asks for enforcement, in this prompt or a later one.
    risky calls coming from one endpoint. Write each as exactly one static
    `forbid` statement with a unique `@id("custom:...")` and an
    `@description("...")`, modelled on the catalog's raw `cedar`, with
-   `action == Kontext::Action::"ToolUse"`. The resource is a `Kontext::Tool`:
-   `"shell"` for shell commands, `"<provider>-mcp/<tool>"` for GitHub, Atlassian
-   and HubSpot MCP tools (for example `github-mcp/merge_pull_request`,
-   `atlassian-mcp/createJiraIssue`), and the agent's own tool name for any other
-   tool, as `toolName` shows it in the decisions. Do not add an `@id` that collides
+   `action == Kontext::Action::"ToolUse"`. How to name the tool:
+   - Shell commands are `Kontext::Tool::"shell"`; match the parsed
+     `context.shell.facts` the way the presets do.
+   - GitHub, Atlassian and HubSpot MCP calls are resolved through a catalog,
+     and only some tools keep a name (for example
+     `github-mcp/merge_pull_request`); the rest arrive as
+     `<provider>-mcp/unrecognized` with an access tier. For these providers
+     prefer a preset, or match `context.tool` (`provider`, `product`, `access`)
+     like the tier presets do, and never build an ID from a tool name.
+   - Any other tool keeps the agent's own tool name, as `toolName` shows it in
+     the decisions, for example `Kontext::Tool::"mcp__linear__delete_issue"`.
+   Whichever you use, validation in the next step is the check: a tool ID it
+   flags `unsupported_tool_id` never matches. Do not add an `@id` that collides
    with an existing ID or a preset's prefix, and do not write `:agent:` or
    `:endpoint:` into it; pass the scope as `endpointId` or `agentId` instead.
 7. **Validate every custom policy** before adding it:
