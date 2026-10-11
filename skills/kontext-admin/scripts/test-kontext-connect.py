@@ -203,6 +203,30 @@ with tempfile.TemporaryDirectory() as directory:
         assert "Connected." in finished(first, first_log) and "Connected." in finished(second, second_log)
         reset()
 
+        # 5b. Two reruns of an approval whose listener died restart exactly one listener.
+        process, log = start()
+        url = auth_url(wait_for(process, log, "Waiting for approval"))
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        os.killpg(int((pending / "pid").read_text()), signal.SIGKILL)
+        wait_port_free()
+        first, first_log = start()
+        second, second_log = start()
+        outputs = [wait_for(first, first_log, "Waiting for approval"), wait_for(second, second_log, "Waiting for approval")]
+        assert all(auth_url(output) == url for output in outputs)
+        assert sum("reload that page" in output for output in outputs) == 1, outputs
+        assert get(approve(url, "restarted")) == 200
+        assert "Connected." in finished(first, first_log) and "Connected." in finished(second, second_log)
+        reset()
+
+        # 5c. A token cache that cannot be written is an error, not "Connected."
+        token_file.mkdir()
+        process, log = start()
+        assert get(approve(auth_url(wait_for(process, log, "Waiting for approval")), "unwritable")) == 200
+        assert "could not write the token cache" in finished(process, log, 1)
+        token_file.rmdir()
+        reset()
+
         # 6. Denied in the browser.
         process, log = start()
         state = parse_qs(urlparse(auth_url(wait_for(process, log, "Waiting for approval"))).query)["state"][0]
@@ -225,7 +249,7 @@ with tempfile.TemporaryDirectory() as directory:
         reset()
         result = subprocess.run(["bash", str(script)], env={**env, "KONTEXT_CONNECT_TIMEOUT": "soon"}, capture_output=True, text=True, timeout=10)
         assert result.returncode == 1 and "must be a positive number of seconds" in result.stderr, result.stderr
-        print("listener survives a killed command; reruns reuse the approval and its verifier; parallel runs share it; "
+        print("listener survives a killed command; reruns reuse the approval and its verifier; parallel runs and parallel restarts share one listener; unwritable cache fails; "
               "INT/TERM/HUP exit codes; denial, busy port, 15 minute default and custom timeout")
     finally:
         for process in started:

@@ -82,6 +82,7 @@ token_valid() {
 pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
   local state verifier remaining cb err code tok terr out
   printf '%s\n' "$$" > "$PENDING/pid"
+  rm -rf "$PENDING/launch" # worker_alive answers from here on
   finish() { printf '%s\n' "$1" > "$PENDING/result.tmp" && mv -f "$PENDING/result.tmp" "$PENDING/result"; rm -f "$PENDING/verifier"; exit 0; }
   state=$(pending_get state); verifier=$(pending_get verifier)
   [ -n "$state" ] && [ -n "$verifier" ] || finish "error: the pending sign-in is incomplete. Run connect again."
@@ -126,16 +127,32 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
   terr=$(printf '%s' "$tok" | jq -r '.error // empty' 2>/dev/null || true)
   [ -n "$terr" ] && finish "error: token exchange failed: $tok"
   out=$( (save_token "$tok") 2>&1) || finish "error: ${out#kontext-connect: }"
+  # errexit is off inside `||`, so confirm the cache really holds the new token.
+  [ "$(jq -r '.access_token // empty' "$TOKEN_FILE" 2>/dev/null || true)" = "$(printf '%s' "$tok" | jq -r '.access_token')" ] ||
+    finish "error: could not write the token cache $TOKEN_FILE"
   finish ok
 }
 
+LAUNCHED=""
 start_worker() { # detached (setsid via node), so stopping this command keeps it
-  rm -f "$PENDING/pid" "$PENDING/ready"
-  KONTEXT_PKCE_WORKER=1 node -e '
-    require("child_process").spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: "ignore" }).unref();
-  ' bash "$SELF"
-  local i
-  for i in $(seq 50); do # up to 10s for the listener to bind before the URL goes out
+  # One launcher at a time: whoever creates $PENDING/launch starts the worker,
+  # others wait for it. A lock left by a launcher killed mid-start expires.
+  local i owner=""
+  if (umask 077; mkdir "$PENDING/launch") 2>/dev/null; then
+    owner=1
+  elif [ $(( $(date +%s) - $(cat "$PENDING/launch/at" 2>/dev/null || echo 0) )) -gt 15 ] && ! worker_alive; then
+    rm -rf "$PENDING/launch"
+    (umask 077; mkdir "$PENDING/launch") 2>/dev/null && owner=1
+  fi
+  if [ -n "$owner" ]; then
+    LAUNCHED=1
+    date +%s > "$PENDING/launch/at"
+    rm -f "$PENDING/pid" "$PENDING/ready"
+    KONTEXT_PKCE_WORKER=1 node -e '
+      require("child_process").spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: "ignore" }).unref();
+    ' bash "$SELF"
+  fi
+  for i in $(seq 75); do # up to 15s for the listener to bind before the URL goes out
     [ -f "$PENDING/ready" ] || [ -f "$PENDING/result" ] && return 0
     sleep 0.2
   done
@@ -175,21 +192,19 @@ connect_pkce() {
     verifier=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
     challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')
     state=$(openssl rand -hex 16)
-    (
+    ( # url last: a rerun resumes only a complete approval, and none has a worker yet
       umask 077
       printf '%s\n' "$verifier" > "$PENDING/verifier"
       printf '%s\n' "$state" > "$PENDING/state"
       printf '%s\n' "$(( $(date +%s) + TIMEOUT ))" > "$PENDING/deadline"
+      printf '%s\n' "$BASE/oauth2/auth?client_id=$CLIENT_ID&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A$CALLBACK_PORT%2Fcallback&scope=${SCOPES// /%20}&state=$state&code_challenge=$challenge&code_challenge_method=S256" > "$PENDING/url"
     )
-    start_worker
-    # Written last: a parallel run waits for it, so it never starts a second listener.
-    printf '%s\n' "$BASE/oauth2/auth?client_id=$CLIENT_ID&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A$CALLBACK_PORT%2Fcallback&scope=${SCOPES// /%20}&state=$state&code_challenge=$challenge&code_challenge_method=S256" > "$PENDING/url"
   fi
 
   local restarted=""
-  if [ -n "$reuse" ] && ! worker_alive && [ ! -f "$PENDING/result" ]; then
-    restarted=1
+  if ! worker_alive && [ ! -f "$PENDING/result" ]; then
     start_worker
+    [ -z "$reuse" ] || [ -z "$LAUNCHED" ] || restarted=1
   fi
   local result; result=$(pending_get result)
   case "$result" in
