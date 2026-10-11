@@ -227,6 +227,20 @@ with tempfile.TemporaryDirectory() as directory:
         token_file.rmdir()
         reset()
 
+        # 5d. After the window a rerun starts a new approval; the old link is dead.
+        process, log = start({"KONTEXT_CONNECT_TIMEOUT": "2"})
+        old_url = auth_url(wait_for(process, log, "Waiting for approval"))
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        time.sleep(2.5)
+        process, log = start()
+        url = auth_url(wait_for(process, log, "Waiting for approval (up to 15 minutes)"))
+        assert url != old_url and "still open" not in log.read()
+        assert get(approve(old_url, "expired")) == 400
+        assert get(approve(url, "renewed")) == 200
+        assert "Connected." in finished(process, log)
+        reset()
+
         # 6. Denied in the browser.
         process, log = start()
         state = parse_qs(urlparse(auth_url(wait_for(process, log, "Waiting for approval"))).query)["state"][0]
@@ -249,7 +263,7 @@ with tempfile.TemporaryDirectory() as directory:
         reset()
         result = subprocess.run(["bash", str(script)], env={**env, "KONTEXT_CONNECT_TIMEOUT": "soon"}, capture_output=True, text=True, timeout=10)
         assert result.returncode == 1 and "must be a positive number of seconds" in result.stderr, result.stderr
-        print("listener survives a killed command; reruns reuse the approval and its verifier; parallel runs and parallel restarts share one listener; unwritable cache fails; "
+        print("listener survives a killed command; reruns reuse the approval and its verifier; parallel runs and parallel restarts share one listener; unwritable cache fails; expired approval renews; "
               "INT/TERM/HUP exit codes; denial, busy port, 15 minute default and custom timeout")
     finally:
         for process in started:

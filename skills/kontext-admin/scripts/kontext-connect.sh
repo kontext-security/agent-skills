@@ -75,6 +75,11 @@ worker_alive() { # a killed worker may linger as a zombie when nothing reaps orp
   [ -n "$pid" ] && stat=$(ps -o stat= -p "$pid" 2>/dev/null) && [ -n "$stat" ] && [ "${stat#Z}" = "$stat" ]
 }
 
+launching() { # another run holds a fresh launch lock (see start_worker)
+  local at; at=$(readlink "$PENDING/launch" 2>/dev/null) || return 1
+  [ $(( $(date +%s) - at )) -le 15 ]
+}
+
 token_valid() {
   [ -f "$TOKEN_FILE" ] && [ "$(jq -r '.expires_at' "$TOKEN_FILE" 2>/dev/null || echo 0)" -gt "$(date +%s)" ]
 }
@@ -82,9 +87,12 @@ token_valid() {
 pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
   local state verifier remaining cb err code tok terr out
   printf '%s\n' "$$" > "$PENDING/pid"
-  rm -rf "$PENDING/launch" # worker_alive answers from here on
-  finish() { printf '%s\n' "$1" > "$PENDING/result.tmp" && mv -f "$PENDING/result.tmp" "$PENDING/result"; rm -f "$PENDING/verifier"; exit 0; }
+  rm -f "$PENDING/launch" # worker_alive answers from here on
   state=$(pending_get state); verifier=$(pending_get verifier)
+  finish() { # only into its own approval, never one that replaced it
+    [ "$(pending_get state)" = "$state" ] || exit 0
+    printf '%s\n' "$1" > "$PENDING/result.tmp" && mv -f "$PENDING/result.tmp" "$PENDING/result"; rm -f "$PENDING/verifier"; exit 0
+  }
   [ -n "$state" ] && [ -n "$verifier" ] || finish "error: the pending sign-in is incomplete. Run connect again."
   remaining=$(( $(pending_get deadline) - $(date +%s) ))
   [ "$remaining" -gt 0 ] || finish timeout
@@ -135,25 +143,31 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
 
 LAUNCHED=""
 start_worker() { # detached (setsid via node), so stopping this command keeps it
-  # One launcher at a time: whoever creates $PENDING/launch starts the worker,
-  # others wait for it. A lock left by a launcher killed mid-start expires.
+  # One launcher at a time: the lock is a symlink whose target is its creation
+  # time, so it appears atomically with its timestamp. A lock whose holder died
+  # before the worker started expires. The worker removes it once it is alive.
   local i owner=""
-  if (umask 077; mkdir "$PENDING/launch") 2>/dev/null; then
+  if ln -s "$(date +%s)" "$PENDING/launch" 2>/dev/null; then
     owner=1
-  elif [ $(( $(date +%s) - $(cat "$PENDING/launch/at" 2>/dev/null || echo 0) )) -gt 15 ] && ! worker_alive; then
-    rm -rf "$PENDING/launch"
-    (umask 077; mkdir "$PENDING/launch") 2>/dev/null && owner=1
+  else
+    if ! launching && ! worker_alive; then
+      rm -f "$PENDING/launch"
+      ln -s "$(date +%s)" "$PENDING/launch" 2>/dev/null && owner=1
+    fi
   fi
   if [ -n "$owner" ]; then
-    LAUNCHED=1
-    date +%s > "$PENDING/launch/at"
-    rm -f "$PENDING/pid" "$PENDING/ready"
-    KONTEXT_PKCE_WORKER=1 node -e '
-      require("child_process").spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: "ignore" }).unref();
-    ' bash "$SELF"
+    if worker_alive || [ -f "$PENDING/result" ]; then # started or finished while we waited
+      rm -f "$PENDING/launch"
+    else
+      LAUNCHED=1
+      rm -f "$PENDING/pid" "$PENDING/ready"
+      KONTEXT_PKCE_WORKER=1 node -e '
+        require("child_process").spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: "ignore" }).unref();
+      ' bash "$SELF"
+    fi
   fi
   for i in $(seq 75); do # up to 15s for the listener to bind before the URL goes out
-    [ -f "$PENDING/ready" ] || [ -f "$PENDING/result" ] && return 0
+    ! launching && { [ -f "$PENDING/ready" ] || [ -f "$PENDING/result" ]; } && return 0
     sleep 0.2
   done
   return 0
@@ -170,6 +184,13 @@ connect_pkce() {
   local reuse="" i
   if [ -d "$PENDING" ]; then
     for i in $(seq 60); do [ -f "$PENDING/url" ] || [ -f "$PENDING/result" ] && break; sleep 0.2; done # another run may be starting it
+    if [ "$(pending_get deadline)" -le "$(date +%s)" ] 2>/dev/null || [ ! -f "$PENDING/url" ]; then
+      # About to be discarded: let a worker that is still exchanging a code finish
+      # first, then stop it, so it never holds the port or touches a new approval.
+      for i in $(seq 75); do worker_alive && [ ! -f "$PENDING/result" ] || break; sleep 0.2; done
+      ! worker_alive || kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
+      for i in $(seq 25); do worker_alive || break; sleep 0.2; done
+    fi
     if [ -f "$PENDING/result" ]; then
       # A previous run was stopped but its worker finished: report a success, retry anything else.
       if [ "$(pending_get result)" = "ok" ] && token_valid; then
@@ -240,7 +261,7 @@ connect_pkce() {
   # A parallel run that shares this approval may read the result and clean up first.
   outcome() { result=$(pending_get result); [ -n "$result" ] || { [ ! -d "$PENDING" ] && token_valid && result=ok; }; }
   while ! outcome; do
-    if ! worker_alive; then
+    if ! worker_alive && ! launching; then
       sleep 0.3
       outcome && break
       echo "kontext-connect: the approval listener stopped unexpectedly. Run connect again to resume the same approval." >&2; exit 1
