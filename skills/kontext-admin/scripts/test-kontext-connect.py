@@ -166,7 +166,7 @@ with tempfile.TemporaryDirectory() as directory:
             process, log = start()
             url = auth_url(wait_for(process, log, "Waiting for approval"))
             process.send_signal(interruption)
-            assert process.wait(timeout=5) == 128 + interruption
+            assert process.wait(timeout=5) == 128 + interruption, (process.returncode, interruption, (log.seek(0), log.read()[-800:])[1])
             process, log = start()
             output = wait_for(process, log, "Waiting for approval (up to 15 minutes)")
             assert "still open" in output and auth_url(output) == url and "reload" not in output
@@ -241,6 +241,28 @@ with tempfile.TemporaryDirectory() as directory:
         assert "Connected." in finished(process, log)
         reset()
 
+        # 5e. Stale leftovers: an expired approval whose recorded PID now belongs to an
+        # unrelated process (never signalled), and a lock whose holder is gone.
+        bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        try:
+            pending.mkdir(mode=0o700)
+            for name, value in {"state": "old", "verifier": "old", "deadline": "1", "url": "http://old",
+                                "pid": str(bystander.pid), "pid_start": "not this process"}.items():
+                (pending / name).write_text(value + "\n")
+            dead = subprocess.Popen(["true"])
+            dead.wait()
+            os.symlink(f"{int(time.time())} {dead.pid}", str(pending) + ".lock")
+            process, log = start()
+            url = auth_url(wait_for(process, log, "Waiting for approval (up to 15 minutes)"))
+            assert bystander.poll() is None, "signalled a process that is not the worker"
+            assert get(approve(url, "leftovers")) == 200
+            assert "Connected." in finished(process, log)
+            assert not os.path.lexists(str(pending) + ".lock")
+        finally:
+            bystander.kill()
+            bystander.wait()
+        reset()
+
         # 6. Denied in the browser.
         process, log = start()
         state = parse_qs(urlparse(auth_url(wait_for(process, log, "Waiting for approval"))).query)["state"][0]
@@ -263,7 +285,7 @@ with tempfile.TemporaryDirectory() as directory:
         reset()
         result = subprocess.run(["bash", str(script)], env={**env, "KONTEXT_CONNECT_TIMEOUT": "soon"}, capture_output=True, text=True, timeout=10)
         assert result.returncode == 1 and "must be a positive number of seconds" in result.stderr, result.stderr
-        print("listener survives a killed command; reruns reuse the approval and its verifier; parallel runs and parallel restarts share one listener; unwritable cache fails; expired approval renews; "
+        print("listener survives a killed command; reruns reuse the approval and its verifier; parallel runs and parallel restarts share one listener; unwritable cache fails; expired approval renews; stale PID and lock are safe; "
               "INT/TERM/HUP exit codes; denial, busy port, 15 minute default and custom timeout")
     finally:
         for process in started:

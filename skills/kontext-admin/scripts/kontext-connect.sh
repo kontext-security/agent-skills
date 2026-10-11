@@ -70,14 +70,41 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 pending_get() { cat "$PENDING/$1" 2>/dev/null || true; }
 
-worker_alive() { # a killed worker may linger as a zombie when nothing reaps orphans
+proc_start() { ps -o lstart= -p "$1" 2>/dev/null || true; }
+
+worker_alive() { # the recorded worker, by PID and start time (PIDs get reused); not a zombie
   local pid stat; pid=$(pending_get pid)
-  [ -n "$pid" ] && stat=$(ps -o stat= -p "$pid" 2>/dev/null) && [ -n "$stat" ] && [ "${stat#Z}" = "$stat" ]
+  [ -n "$pid" ] && stat=$(ps -o stat= -p "$pid" 2>/dev/null) && [ -n "$stat" ] && [ "${stat#Z}" = "$stat" ] &&
+    [ "$(proc_start "$pid")" = "$(pending_get pid_start)" ]
 }
 
-launching() { # another run holds a fresh launch lock (see start_worker)
-  local at; at=$(readlink "$PENDING/launch" 2>/dev/null) || return 1
-  [ $(( $(date +%s) - at )) -le 15 ]
+# Every change to $PENDING (create, resume, restart, discard) happens under one
+# short-lived lock; waiting for the human happens outside it. The lock is a
+# symlink naming its creation time and holder, created atomically; a lock whose
+# holder is gone or that is older than a minute is broken.
+LOCK="$PENDING.lock"
+LOCKED=""
+lock_pending() {
+  local i info now
+  for i in $(seq 450); do
+    if ln -s "$(date +%s) $$" "$LOCK" 2>/dev/null; then LOCKED=1; return 0; fi
+    if info=$(readlink "$LOCK" 2>/dev/null); then
+      now=$(date +%s)
+      if [ $(( now - ${info%% *} )) -gt 60 ] || ! kill -0 "${info##* }" 2>/dev/null; then
+        [ "$(readlink "$LOCK" 2>/dev/null)" != "$info" ] || rm -f "$LOCK"
+      fi
+    fi
+    sleep 0.2
+  done
+  echo "kontext-connect: another sign-in is still starting; run connect again." >&2; exit 1
+}
+unlock_pending() { [ -z "$LOCKED" ] || rm -f "$LOCK"; LOCKED=""; }
+
+stop_worker() { # let a worker that is exchanging a code finish, then stop it
+  local i
+  for i in $(seq 75); do worker_alive && [ ! -f "$PENDING/result" ] || break; sleep 0.2; done
+  ! worker_alive || kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
+  for i in $(seq 25); do worker_alive || break; sleep 0.2; done
 }
 
 token_valid() {
@@ -86,8 +113,8 @@ token_valid() {
 
 pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
   local state verifier remaining cb err code tok terr out
+  proc_start "$$" > "$PENDING/pid_start" # identity first: pid is read as "alive"
   printf '%s\n' "$$" > "$PENDING/pid"
-  rm -f "$PENDING/launch" # worker_alive answers from here on
   state=$(pending_get state); verifier=$(pending_get verifier)
   finish() { # only into its own approval, never one that replaced it
     [ "$(pending_get state)" = "$state" ] || exit 0
@@ -141,107 +168,79 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
   finish ok
 }
 
-LAUNCHED=""
 start_worker() { # detached (setsid via node), so stopping this command keeps it
-  # One launcher at a time: the lock is a symlink whose target is its creation
-  # time, so it appears atomically with its timestamp. A lock whose holder died
-  # before the worker started expires. The worker removes it once it is alive.
-  local i owner=""
-  if ln -s "$(date +%s)" "$PENDING/launch" 2>/dev/null; then
-    owner=1
-  else
-    if ! launching && ! worker_alive; then
-      rm -f "$PENDING/launch"
-      ln -s "$(date +%s)" "$PENDING/launch" 2>/dev/null && owner=1
-    fi
-  fi
-  if [ -n "$owner" ]; then
-    if worker_alive || [ -f "$PENDING/result" ]; then # started or finished while we waited
-      rm -f "$PENDING/launch"
-    else
-      LAUNCHED=1
-      rm -f "$PENDING/pid" "$PENDING/ready"
-      KONTEXT_PKCE_WORKER=1 node -e '
-        require("child_process").spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: "ignore" }).unref();
-      ' bash "$SELF"
-    fi
-  fi
+  local i
+  rm -f "$PENDING/pid" "$PENDING/pid_start" "$PENDING/ready"
+  KONTEXT_PKCE_WORKER=1 node -e '
+    require("child_process").spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: "ignore" }).unref();
+  ' bash "$SELF"
   for i in $(seq 75); do # up to 15s for the listener to bind before the URL goes out
-    ! launching && { [ -f "$PENDING/ready" ] || [ -f "$PENDING/result" ]; } && return 0
+    [ -f "$PENDING/ready" ] || [ -f "$PENDING/result" ] && return 0
     sleep 0.2
   done
-  return 0
 }
 
 connect_pkce() {
   command -v node >/dev/null || { echo "kontext-connect: node is required for the browser flow (set KONTEXT_CONNECT_FLOW=device for the device-code flow)" >&2; exit 1; }
   command -v openssl >/dev/null || { echo "kontext-connect: openssl is required" >&2; exit 1; }
+  trap unlock_pending EXIT
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
   mkdir -p "$CACHE_DIR" && chmod 700 "$CACHE_DIR"
 
-  local reuse="" i
+  lock_pending
+  local reuse="" restarted=""
   if [ -d "$PENDING" ]; then
-    for i in $(seq 60); do [ -f "$PENDING/url" ] || [ -f "$PENDING/result" ] && break; sleep 0.2; done # another run may be starting it
-    if [ "$(pending_get deadline)" -le "$(date +%s)" ] 2>/dev/null || [ ! -f "$PENDING/url" ]; then
-      # About to be discarded: let a worker that is still exchanging a code finish
-      # first, then stop it, so it never holds the port or touches a new approval.
-      for i in $(seq 75); do worker_alive && [ ! -f "$PENDING/result" ] || break; sleep 0.2; done
-      ! worker_alive || kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
-      for i in $(seq 25); do worker_alive || break; sleep 0.2; done
-    fi
     if [ -f "$PENDING/result" ]; then
       # A previous run was stopped but its worker finished: report a success, retry anything else.
       if [ "$(pending_get result)" = "ok" ] && token_valid; then
-        rm -rf "$PENDING"; echo "  Connected. You can run Kontext commands now."; return
+        rm -rf "$PENDING"; unlock_pending
+        echo "  Connected. You can run Kontext commands now."; return
       fi
-      rm -rf "$PENDING"
-    elif [ -f "$PENDING/url" ] && [ -f "$PENDING/verifier" ] && [ "$(pending_get deadline)" -gt "$(date +%s)" ] 2>/dev/null; then
+    elif [ -f "$PENDING/url" ] && [ "$(pending_get deadline)" -gt "$(date +%s)" ] 2>/dev/null; then
       reuse=1
-    else
+    fi
+    if [ -z "$reuse" ]; then # finished, expired or never completed: discard it
+      stop_worker
       rm -rf "$PENDING"
     fi
   fi
 
   if [ -z "$reuse" ]; then
-    (umask 077; mkdir "$PENDING") 2>/dev/null || {
-      [ -d "$PENDING" ] || { echo "kontext-connect: cannot create $PENDING" >&2; exit 1; }
-      exec "$SELF" # another run created it a moment ago: reuse its sign-in
-    }
     local verifier challenge state
     verifier=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
     challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')
     state=$(openssl rand -hex 16)
-    ( # url last: a rerun resumes only a complete approval, and none has a worker yet
+    ( # url last: only a complete approval is ever resumed
       umask 077
+      mkdir "$PENDING"
       printf '%s\n' "$verifier" > "$PENDING/verifier"
       printf '%s\n' "$state" > "$PENDING/state"
       printf '%s\n' "$(( $(date +%s) + TIMEOUT ))" > "$PENDING/deadline"
       printf '%s\n' "$BASE/oauth2/auth?client_id=$CLIENT_ID&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A$CALLBACK_PORT%2Fcallback&scope=${SCOPES// /%20}&state=$state&code_challenge=$challenge&code_challenge_method=S256" > "$PENDING/url"
     )
   fi
-
-  local restarted=""
   if ! worker_alive && [ ! -f "$PENDING/result" ]; then
+    [ -z "$reuse" ] || restarted=1
     start_worker
-    [ -z "$reuse" ] || [ -z "$LAUNCHED" ] || restarted=1
   fi
-  local result; result=$(pending_get result)
+  local result own_state auth_url remaining=$TIMEOUT
+  result=$(pending_get result)
+  own_state=$(pending_get state)
+  auth_url=$(pending_get url)
   case "$result" in
     listener:*)
-      rm -rf "$PENDING"
+      rm -rf "$PENDING"; unlock_pending
       echo "kontext-connect: $result" >&2
       echo "kontext-connect: could not listen on 127.0.0.1:$CALLBACK_PORT (port in use?)" >&2; exit 1 ;;
   esac
-
-  local auth_url remaining=$TIMEOUT
-  auth_url=$(pending_get url)
   if [ -n "$reuse" ]; then # what is left, rounded up to whole minutes
     remaining=$(( $(pending_get deadline) - $(date +%s) ))
     [ "$remaining" -lt 60 ] || remaining=$(( (remaining + 59) / 60 * 60 ))
     [ "$remaining" -gt 0 ] || remaining=1
   fi
+  unlock_pending
 
   # Relay this to the user verbatim; do not proceed silently.
   echo ""
@@ -258,17 +257,30 @@ connect_pkce() {
   fi
   echo "  Waiting for approval (up to $(wait_label "$remaining"))…"
 
+  # Poll in a child and block in `wait`, so a signal runs its trap at once
+  # (bash can mis-parse a trap that fires while it runs a command substitution).
+  await_approval & WAITER=$!
+  trap 'kill "$WAITER" 2>/dev/null || true; unlock_pending' EXIT
+  wait "$WAITER" || exit $?
+}
+
+await_approval() { # uses own_state and result from connect_pkce
   # A parallel run that shares this approval may read the result and clean up first.
-  outcome() { result=$(pending_get result); [ -n "$result" ] || { [ ! -d "$PENDING" ] && token_valid && result=ok; }; }
+  outcome() {
+    [ "$(pending_get state)" = "$own_state" ] && result=$(pending_get result) || result=""
+    [ -n "$result" ] || { [ "$(pending_get state)" != "$own_state" ] && token_valid && result=ok; }
+  }
   while ! outcome; do
-    if ! worker_alive && ! launching; then
+    if [ "$(pending_get state)" != "$own_state" ] || ! worker_alive; then
       sleep 0.3
       outcome && break
       echo "kontext-connect: the approval listener stopped unexpectedly. Run connect again to resume the same approval." >&2; exit 1
     fi
     sleep 0.2
   done
-  rm -rf "$PENDING"
+  lock_pending # discard only our own approval, never one that replaced it
+  [ "$(pending_get state)" != "$own_state" ] || rm -rf "$PENDING"
+  unlock_pending
   case "$result" in
     ok) echo "  Connected. You can run Kontext commands now." ;;
     timeout) echo "kontext-connect: no approval within $(wait_label "$TIMEOUT"); the approval link has stopped working. Run connect again for a new link." >&2; exit 1 ;;
