@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory() as directory:
     opener.chmod(0o700)
     server = HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
+    env = {**{k: v for k, v in os.environ.items() if k != "KONTEXT_CONNECT_TIMEOUT"}, "PATH": directory + os.pathsep + os.environ["PATH"],
            "TMPDIR": str(scratch), "XDG_CACHE_HOME": directory,
            "KONTEXT_CONNECT_FLOW": "pkce", "KONTEXT_CLIENT_ID": "alpha", "KONTEXT_CLIENT_SECRET": "",
            "KONTEXT_API_BASE": f"http://127.0.0.1:{server.server_port}"}
