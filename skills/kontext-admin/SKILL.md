@@ -131,9 +131,12 @@ recorded calls would have done under the candidate.
    and lists it in the response's `message` and `changedPolicyIds`, and enforcing
    the preset enforces its guard too, so you never add or enforce a companion
    separately.
-   A 409 `policy_already_present` means the policy is already in the set (often
-   a companion added earlier): treat it as done, not as an error, and keep the
-   last good ETag, since nothing changed. After a successful action,
+   A 409 `policy_already_present` means a copy is already in the set (often a
+   companion added earlier) and nothing changed, so keep the last good ETag.
+   Re-read the version and check each requested scope: scoped copies carry
+   `:endpoint:` or `:agent:` after the policy ID. When every scope you asked for
+   is there, treat it as done, not as an error; otherwise add only the missing
+   scopes. After a successful action,
    refresh `etag` from its response headers before the next action. Only use
    ETags from successful deployment reads or policy actions, never error responses
    or other endpoints. After a 422, fix the policy and retain the last deployment
@@ -268,10 +271,11 @@ asks for enforcement, in this prompt or a later one.
 9. **Add them to observing** right away, one `POST /policy/actions`
    `{"action":"add",...}` per policy, following
    [Change Cedar policy safely](#change-cedar-policy-safely) for ETags and
-   errors. Before each add, skip any ID that an earlier add already put in the
-   set: the response's `changedPolicyIds` lists companion guards added with a
-   preset. A 409 `policy_already_present` means it is already there, so treat
-   it as done and continue with your last good ETag.
+   errors. Before each add, read the current version's text and skip a policy
+   only when it is already there for the same scope (companion guards added by
+   an earlier preset count; they apply to the scope of that preset). Handle a
+   409 `policy_already_present` as described there: done when every requested
+   scope exists, otherwise add the missing scopes.
 10. **Replay** the resulting observing version over 30 days (or 7 or 14) and
     report per policy what it would have blocked and what was not replayable.
 11. **Finish.** If the user did not ask for enforcement, say which version is
