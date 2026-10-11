@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.7.0"
+  version: "0.7.1"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, and managed-endpoint releases. Use when asked to connect to Kontext, connect Entra/SCIM, propose or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -63,6 +63,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Decisions | `GET /decisions` (filters: provider, decisionResult, decisionCategory, reasonCode, riskLevel, installationId, sessionId, from/to; cursor pagination), `GET /decisions/{id}` | `management:logs:read` |
 | Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
 | Risks | `GET /enterprise/dashboard/risk/summary` (from/to), `GET /enterprise/dashboard/risk/findings` (from/to, severity, riskCategory, agent, principal, decision; cursor pagination), `GET /enterprise/dashboard/execution/failures` (from/to, toolName) | `management:logs:read` |
+| Demo mode | `GET /demo-data/mode` (returns `{"demoMode": true}` or `false`; read-only) | `management:logs:read` |
 | Releases | `GET /deployments/releases`, `GET /deployments/releases/latest`, `POST /deployments/releases/{version}/artifacts/{kind}/download-url` | `management:deployments:read` |
 | Install tokens | `GET/POST /organizations/current/install-tokens`, `POST …/{sha256}/revoke` | `management:deployments:read` / `:write` |
 
@@ -206,10 +207,11 @@ the observing version; nothing is enforced unless the user says so.
    `GET /decisions` over the last 30 days (`from`/`to`) to see which tools and
    resources are used and what was already blocked. Read `GET /enterprise/dashboard/risk/summary` and
    `…/risk/findings` for the same window to see flagged calls by severity and
-   category. Summarize the top resources and risks for the user. In demo mode
-   (the dashboard shows demo data) the risk, replay and blocked reads return the
-   shared demo workspace while decisions, traces and writes stay on this one; ask
-   the user whether demo mode is on and have them turn it off before proposing.
+   category. Before relying on these reads, call `GET /demo-data/mode`. When
+   `demoMode` is `true`, the risk, replay and blocked reads return the shared demo
+   workspace while decisions, traces and writes stay on this one: tell the user
+   that demo mode is on and have them turn it off in the dashboard before
+   proposing. Summarize the top resources and risks for the user.
 3. **Read the preset catalog:** `GET /policy/rule-templates`. Prefer a preset when
    one covers a risk; check `availability`, `coverage` and `knownGaps`.
 4. **Propose.** Present a short list: for each policy, the risk or usage it
