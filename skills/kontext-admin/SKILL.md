@@ -129,8 +129,9 @@ recorded calls would have done under the candidate.
    the top-level scope fields, for example `[{"agentId":"openai-codex"}]`.
    Some presets need a companion guard; the server adds it in the same action
    and lists it in the response's `message` and `changedPolicyIds`, and enforcing
-   the preset enforces its guard too, so you never add or enforce a companion
-   separately.
+   the preset enforces its guard too, so a preset's companion needs no add or
+   enforce of its own. A custom policy gets no companion: when it needs a
+   block-unrecognized guard, add and enforce that preset yourself.
    A 409 `policy_already_present` means a copy is already in the set (often a
    companion added earlier) and nothing changed, so keep the last good ETag.
    Re-read the version and check each requested scope: scoped copies carry
@@ -239,8 +240,8 @@ asks for enforcement, in this prompt or a later one.
    carries `availability`, `coverage`, `knownGaps` and its raw `cedar`. Prefer a
    preset when one covers a risk or a write-capable tool you saw in use. Some
    presets need a companion guard (for example a block-unrecognized operations
-   policy); the server adds it with the preset, so never propose or add a
-   companion on its own.
+   policy); the server adds it with the preset, so do not add that companion
+   separately. Step 7 covers the one case where you add a guard yourself.
 6. **Write custom raw policies for what no preset covers.** Look for it before
    concluding the presets are enough: logs usually show something specific to
    this workspace, such as a particular MCP tool, a provider no preset names, or
