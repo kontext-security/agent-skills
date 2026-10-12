@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.8.0"
+  version: "0.8.1"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -17,7 +17,7 @@ You are operating a Kontext organization on behalf of one of its admins, through
 scripts/kontext-api.sh GET /api/v1/policy/deployment
 ```
 
-The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The helper waits up to 15 minutes for approval (`KONTEXT_CONNECT_TIMEOUT` in seconds changes that), so run it with a command timeout of at least that long, or in the background, and do not cancel it while the user is approving: a stopped helper shows "127.0.0.1 refused to connect" in the browser. If that happens or the wait ends, run it again and relay the new URL. The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
+The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The approval stays open for 15 minutes (`KONTEXT_CONNECT_TIMEOUT` in seconds changes that), and its local listener keeps running even if your command is stopped, so a timeout on your side does not lose the user's Allow. Prefer a command timeout of at least that long, or run it in the background. If your command ended before approval, run the same command again: it reuses the open approval and prints the same URL, or continues straight away once the user has approved. If the browser ever showed "127.0.0.1 refused to connect" after Allow, run the helper again and ask the user to reload that page. After 15 minutes the link stops working; run it again and relay the new URL. The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
 
 Connect once: permissions live under **Settings → Agent access** and changes apply to the next request without reconnecting. New workspaces start with **Policy author** (every read plus policy write), so a connected agent can propose policies right away. Workspaces created earlier may still be read-only; there an admin switches the preset to Policy author before policy writes work. The five areas are **Policies, Directory, Settings, Logs, and Deployments**. Use service accounts when each agent needs different access or when running in CI.
 
