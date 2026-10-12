@@ -345,9 +345,13 @@ them: show it, ask one question, and enforce only after a clear yes.
    `/policy/versions/{id}`, and `/policy/versions`. In an observe-only workspace
    `policyVersionId` is what observes. If nothing is observing, say so and
    offer [Propose policies from logs and risks](#propose-policies-from-logs-and-risks).
-2. **List what would change:** every policy that observes but is not enforced,
-   in plain words, with its scope and since when it has been observing (the
-   `createdAt` of the version that added it, from the versions' `changes`).
+2. **List what would change:** compare the full observing text with the
+   enforced text (in an observe-only workspace, with the catalog's
+   `default-permit`). Name every policy that would start blocking, in plain
+   words, with its scope and since when it has been observing (the `createdAt`
+   of the version that added it, from the versions' `changes`). Also name every
+   enforced policy the observing version removes or modifies: promoting the
+   whole version removes or changes those protections too.
 3. **Gather the evidence:** check demo mode as in the propose workflow, then
    replay over 30 days as in step 3 of
    [Change Cedar policy safely](#change-cedar-policy-safely), and read
@@ -372,6 +376,8 @@ them: show it, ask one question, and enforce only after a clear yes.
    copies carry their `:endpoint:` or `:agent:` suffix); a base preset ID
    enforces every copy of that preset, so use it only when no other copy
    exists. Include any block-unrecognized guard a custom policy relies on.
+   Promote only when the user approved every change from step 2, removals
+   and modifications included.
 7. **Confirm:** re-read the deployment, name the enforced version by number,
    list what now blocks, and say that each Mac applies it at its next check-in.
 
@@ -386,13 +392,17 @@ past, so never guess one from its number.
    and stop.
 2. **Find what the last enforcement added:** list every policy that blocks
    now, in plain words, with the version that added it and when (walk the
-   `changes` of the enforced version and its ancestors). One enforcement often
-   covers several versions, because each add saves its own version, so do not
-   stop at the parent: treat the newest batch (consecutive versions by the same
-   creator, minutes apart) as what the last enforcement added, unless the user
-   names the policies.
+   `changes` of the enforced version and its ancestors). Promotion saves no
+   version, so history cannot show which policies were enforced together. When
+   this conversation enforced them, use what you enforced. Otherwise suggest
+   the newest batch (consecutive versions by the same creator, minutes apart;
+   one enforcement often covers several versions because each add saves its
+   own), say that it is a guess, and let the user pick from the list.
 3. **Offer the default, ask once:** move those policies back to observing with
-   `{"action":"stop","policyId":"<exact @id>"}` per policy. They keep
+   `{"action":"stop","policyId":"<exact @id>"}` per policy. An unscoped preset's
+   exact `@id` is also its base ID, and `stop` on a base ID stops every copy of
+   that preset, scoped ones included; when other copies are enforced, name them
+   all in the question. They keep
    observing and nothing is lost, so they can be enforced again later. When the
    user asks for a specific earlier version instead, use
    `POST /policy/deployment/rollback` with it, after presenting the policies
