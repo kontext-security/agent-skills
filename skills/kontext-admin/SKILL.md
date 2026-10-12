@@ -415,8 +415,8 @@ past, so never guess one from its number.
    conversation enforced it; otherwise let the user pick from the versions).
    Present the policies it would remove and restore (step 5 of
    [Change Cedar policy safely](#change-cedar-policy-safely)), and say that the
-   rollback does not put the undone changes back into observing, so they stop
-   observing too. Then ask once and wait.
+   rollback leaves the observing version as it is: read it and say whether the
+   undone changes still observe there. Then ask once and wait.
 4. **Apply and confirm:** after the yes, apply it, re-read the deployment, say
    what no longer blocks, and that each Mac applies it at its next check-in.
 
