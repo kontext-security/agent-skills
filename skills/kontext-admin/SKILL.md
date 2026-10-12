@@ -387,7 +387,8 @@ them: show it, ask one question, and enforce only after a clear yes.
    and modifications included. When the user picked only some policies,
    replay what enforcing them would leave (`candidatePolicyText` in
    `POST /policy/replay`): the enforced text (in an observe-only workspace,
-   the observing version's `permit` statements, which the first enforcement
+   the observing version's `default-permit` copies, or the catalog's
+   `default-permit` when it has none, which is what the first enforcement
    starts from) with each picked policy and its
    guards replaced by its observing form, or dropped when observing removed
    it, and the rest unchanged. A preset's companion guard that is already
