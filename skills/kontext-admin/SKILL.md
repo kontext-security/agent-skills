@@ -315,9 +315,11 @@ enforcement, in this prompt or a later one.
    scope exists, otherwise add the missing scopes.
 10. **Replay** the resulting observing version over 30 days (or 7 or 14). For
     each policy, check that it catches the calls that motivated it and say so.
-    When it does not (the calls were not replayable, or the rule does not match
-    them), say that plainly instead of implying the policy works, and fix the
-    rule when you can.
+    Replay reports changed verdicts only, so a call another enforced policy
+    already blocks shows no change; say that, rather than that the rule does
+    not match. When the motivating calls were not replayable, or were
+    replayed as allowed, say that plainly instead of implying the policy
+    works, and fix the rule when you can.
 11. **Finish.** If the user did not ask for enforcement, say which version is
     observing (by number), that nothing blocks yet, and suggest letting it
     observe a few days of normal work so the evidence covers it. The next
@@ -374,13 +376,15 @@ them: show it, ask one question, and enforce only after a clear yes.
    (step 4 of [Change Cedar policy safely](#change-cedar-policy-safely)). Only
    some policies: `{"action":"enforce","policyId":"<exact @id>"}` per policy,
    using the exact `@id` of each copy as it appears in the version text (scoped
-   copies carry their `:endpoint:` or `:agent:` suffix); a base preset ID
-   enforces every copy of that preset, so use it only when no other copy
-   exists. Include any block-unrecognized guard a custom policy relies on.
+   copies carry their `:endpoint:` or `:agent:` suffix); an `@id` without a
+   scope suffix, preset or custom, is also the base ID and enforces every copy,
+   so use it only when the user approved every copy. Include any block-unrecognized guard a custom policy relies on.
    Promote only when the user approved every change from step 2, removals
    and modifications included.
 7. **Confirm:** re-read the deployment, name the enforced version by number,
    list what now blocks, and say that each Mac applies it at its next check-in.
+   If the returned `rolloutMode` is `disabled`, say instead that nothing blocks
+   until enforcement is resumed in the dashboard.
 
 ### Roll back enforcement
 
