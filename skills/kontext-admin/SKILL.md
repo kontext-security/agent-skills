@@ -386,7 +386,9 @@ them: show it, ask one question, and enforce only after a clear yes.
    Promote only when the user approved every change from step 2, removals
    and modifications included. When the user picked only some policies,
    replay what enforcing them would leave (`candidatePolicyText` in
-   `POST /policy/replay`): the enforced text with each picked policy and its
+   `POST /policy/replay`): the enforced text (in an observe-only workspace,
+   the observing version's `permit` statements, which the first enforcement
+   starts from) with each picked policy and its
    guards replaced by its observing form, or dropped when observing removed
    it, and the rest unchanged. A preset's companion guard that is already
    enforced stays as it is, since enforcing the preset does not touch it.
