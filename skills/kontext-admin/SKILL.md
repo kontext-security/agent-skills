@@ -400,22 +400,23 @@ past, so never guess one from its number.
    one enforcement often covers several versions because each add saves its
    own), say that it is a guess, and let the user pick from the list.
 3. **Offer the default, ask once:** move those policies back to observing with
-   `{"action":"stop","policyId":"<exact @id>"}` per policy. A policy's `@id`
-   without a scope suffix, preset or custom, is also its base ID, and `stop` on
-   a base ID stops every copy, scoped ones included; when other copies are
-   enforced, name them all in the question. `stop` only undoes policies that
-   newly started blocking: when the last enforcement also modified or removed
-   an enforced policy, `stop` cannot restore the old rule, so offer
-   `POST /policy/deployment/rollback` to the version enforced before it instead
-   (known when this conversation enforced it; otherwise let the user pick from
-   the versions, showing what each would restore). They keep
-   observing and nothing is lost, so they can be enforced again later. When the
-   user asks for a specific earlier version instead, use
-   `POST /policy/deployment/rollback` with it, after presenting the policies
-   the rollback would remove and restore (step 5 of
-   [Change Cedar policy safely](#change-cedar-policy-safely)). Ask one
-   question, such as "Stop blocking these 2 policies and keep them observing?",
-   then wait for a yes.
+   `{"action":"stop","policyId":"<exact @id>"}` per policy. They keep
+   observing and nothing is lost, so they can be enforced again later. A
+   policy's `@id` without a scope suffix, preset or custom, is also its base
+   ID, and `stop` on a base ID stops every copy, scoped ones included; when
+   other copies are enforced, name them all in the question. Ask one question,
+   such as "Stop blocking these 2 policies and keep them observing?", then wait
+   for a yes.
+
+   `stop` only undoes policies that newly started blocking. When the last
+   enforcement also modified or removed an enforced policy, or the user asks
+   for a specific earlier version, offer `POST /policy/deployment/rollback` to
+   that version instead (the one enforced before is known when this
+   conversation enforced it; otherwise let the user pick from the versions).
+   Present the policies it would remove and restore (step 5 of
+   [Change Cedar policy safely](#change-cedar-policy-safely)), and say that the
+   rollback does not put the undone changes back into observing; to observe
+   them again, they are added again afterwards. Then ask once and wait.
 4. **Apply and confirm:** after the yes, apply it, re-read the deployment, say
    what no longer blocks, and that each Mac applies it at its next check-in.
 
