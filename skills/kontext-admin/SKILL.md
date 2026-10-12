@@ -372,7 +372,9 @@ them: show it, ask one question, and enforce only after a clear yes.
    do these things; an observe-only workspace switches to enforcing; each Mac
    applies it at its next check-in; "Roll back" undoes it), then one question
    such as "Enforce these 3 policies now?" When some are thin, offer to enforce
-   only the others. Then stop and wait. A yes the user gave earlier in the
+   only the others. A preset and the companion guard the server enforces with
+   it, or a custom policy and the guard it relies on, are one choice: list them
+   together and never offer one without the other. Then stop and wait. A yes the user gave earlier in the
    conversation counts only if they had seen this evidence.
 6. **Enforce what the user approved.** All of the observing version: promote it
    (step 4 of [Change Cedar policy safely](#change-cedar-policy-safely)). Only
@@ -382,7 +384,10 @@ them: show it, ask one question, and enforce only after a clear yes.
    scope suffix, preset or custom, is also the base ID and enforces every copy,
    so use it only when the user approved every copy. Include any block-unrecognized guard a custom policy relies on.
    Promote only when the user approved every change from step 2, removals
-   and modifications included.
+   and modifications included. When the user picked only some policies,
+   replay the enforced text plus the picked policies and their guards
+   (`candidatePolicyText` in `POST /policy/replay`) and confirm that result
+   before enforcing, since the full replay described a different set.
 7. **Confirm:** re-read the deployment, name the enforced version by number,
    list what now blocks, and say that each Mac applies it at its next check-in.
    If the returned `rolloutMode` is `disabled`, say instead that nothing blocks
