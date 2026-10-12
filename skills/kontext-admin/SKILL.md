@@ -350,9 +350,10 @@ them: show it, ask one question, and enforce only after a clear yes.
 2. **List what would change:** compare the full observing text with the
    enforced text (in an observe-only workspace, with the catalog's
    `default-permit`). Name every policy that would start blocking, in plain
-   words, with its scope and since when it has been observing in its current
-   form (the `createdAt` of the latest version whose `changes` added or
-   modified it). Also name every
+   words, with its scope and when it was added or last changed (the `createdAt` of the
+   latest version whose `changes` added or modified it). That is not when it
+   started observing, which history does not record, so do not call it an
+   observation period. Also name every
    enforced policy the observing version removes or modifies: promoting the
    whole version removes or changes those protections too.
 3. **Gather the evidence:** check demo mode as in the propose workflow, then
@@ -361,11 +362,12 @@ them: show it, ask one question, and enforce only after a clear yes.
    `/policy/blocked?days=7`. Per policy: how many recorded calls it would have
    blocked, by which agents and Macs, with one or two examples, and whether any
    of those look like normal work it would now break.
-4. **Judge the evidence and say it in one line per policy:** enough when it
-   has observed at least a few days of normal work and the replay matched the
-   calls it was written for; thin when it was added today, matched nothing, or
-   most calls were not replayable. Recommend waiting on thin policies, but let
-   the user decide.
+4. **Judge the evidence and say it in one line per policy:** replay checks
+   the rule against recorded calls, so its age does not matter. Enough when
+   the replay window holds several days of normal work and the rule matched
+   the calls it was written for; thin when it matched nothing, most calls were
+   not replayable, or the window is only a day or two of activity. Recommend
+   waiting on thin policies, but let the user decide.
 5. **Ask once:** what enforcing does (these agents on these Macs can no longer
    do these things; an observe-only workspace switches to enforcing; each Mac
    applies it at its next check-in; "Roll back" undoes it), then one question
