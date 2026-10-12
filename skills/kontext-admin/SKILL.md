@@ -348,8 +348,9 @@ them: show it, ask one question, and enforce only after a clear yes.
 2. **List what would change:** compare the full observing text with the
    enforced text (in an observe-only workspace, with the catalog's
    `default-permit`). Name every policy that would start blocking, in plain
-   words, with its scope and since when it has been observing (the `createdAt`
-   of the version that added it, from the versions' `changes`). Also name every
+   words, with its scope and since when it has been observing in its current
+   form (the `createdAt` of the latest version whose `changes` added or
+   modified it). Also name every
    enforced policy the observing version removes or modifies: promoting the
    whole version removes or changes those protections too.
 3. **Gather the evidence:** check demo mode as in the propose workflow, then
@@ -399,10 +400,15 @@ past, so never guess one from its number.
    one enforcement often covers several versions because each add saves its
    own), say that it is a guess, and let the user pick from the list.
 3. **Offer the default, ask once:** move those policies back to observing with
-   `{"action":"stop","policyId":"<exact @id>"}` per policy. An unscoped preset's
-   exact `@id` is also its base ID, and `stop` on a base ID stops every copy of
-   that preset, scoped ones included; when other copies are enforced, name them
-   all in the question. They keep
+   `{"action":"stop","policyId":"<exact @id>"}` per policy. A policy's `@id`
+   without a scope suffix, preset or custom, is also its base ID, and `stop` on
+   a base ID stops every copy, scoped ones included; when other copies are
+   enforced, name them all in the question. `stop` only undoes policies that
+   newly started blocking: when the last enforcement also modified or removed
+   an enforced policy, `stop` cannot restore the old rule, so offer
+   `POST /policy/deployment/rollback` to the version enforced before it instead
+   (known when this conversation enforced it; otherwise let the user pick from
+   the versions, showing what each would restore). They keep
    observing and nothing is lost, so they can be enforced again later. When the
    user asks for a specific earlier version instead, use
    `POST /policy/deployment/rollback` with it, after presenting the policies
