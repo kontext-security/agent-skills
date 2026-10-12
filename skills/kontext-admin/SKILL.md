@@ -388,7 +388,9 @@ them: show it, ask one question, and enforce only after a clear yes.
    replay what enforcing them would leave (`candidatePolicyText` in
    `POST /policy/replay`): the enforced text with each picked policy and its
    guards replaced by its observing form, or dropped when observing removed
-   it, and the rest unchanged. Confirm that result before enforcing, since the
+   it, and the rest unchanged. A preset's companion guard that is already
+   enforced stays as it is, since enforcing the preset does not touch it.
+   Confirm that result before enforcing, since the
    full replay described a different set.
 7. **Confirm:** re-read the deployment, name the enforced version by number,
    list what now blocks, and say that each Mac applies it at its next check-in.
