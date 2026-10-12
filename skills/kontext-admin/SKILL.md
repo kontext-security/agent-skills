@@ -385,7 +385,9 @@ them: show it, ask one question, and enforce only after a clear yes.
    so use it only when the user approved every copy. Include any block-unrecognized guard a custom policy relies on.
    Promote only when the user approved every change from step 2, removals
    and modifications included. Offer a partial pick only among new `forbid`
-   policies (with their guards); their replay counts stay valid on their own.
+   policies, each taken whole with every scoped copy and its guards, since
+   replay counts copies under their base ID; those counts stay valid on their
+   own.
    When the observing version modifies or removes a policy or changes a
    `permit`, offer the whole version or nothing, because enforcing part of it
    gives a set the replay did not check.
