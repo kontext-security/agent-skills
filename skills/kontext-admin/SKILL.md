@@ -384,17 +384,11 @@ them: show it, ask one question, and enforce only after a clear yes.
    scope suffix, preset or custom, is also the base ID and enforces every copy,
    so use it only when the user approved every copy. Include any block-unrecognized guard a custom policy relies on.
    Promote only when the user approved every change from step 2, removals
-   and modifications included. When the user picked only some policies,
-   replay what enforcing them would leave (`candidatePolicyText` in
-   `POST /policy/replay`): the enforced text (in an observe-only workspace,
-   the observing version's `default-permit` copies, or the catalog's
-   `default-permit` when it has none, which is what the first enforcement
-   starts from) with each picked policy and its
-   guards replaced by its observing form, or dropped when observing removed
-   it, and the rest unchanged. A preset's companion guard that is already
-   enforced stays as it is, since enforcing the preset does not touch it.
-   Confirm that result before enforcing, since the
-   full replay described a different set.
+   and modifications included. Offer a partial pick only among new `forbid`
+   policies (with their guards); their replay counts stay valid on their own.
+   When the observing version modifies or removes a policy or changes a
+   `permit`, offer the whole version or nothing, because enforcing part of it
+   gives a set the replay did not check.
 7. **Confirm:** re-read the deployment, name the enforced version by number,
    list what now blocks, and say that each Mac applies it at its next check-in.
    If the returned `rolloutMode` is `disabled`, say instead that nothing blocks
