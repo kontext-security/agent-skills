@@ -17,7 +17,7 @@ You are operating a Kontext organization on behalf of one of its admins, through
 scripts/kontext-api.sh GET /api/v1/policy/deployment
 ```
 
-The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The approval stays open for 15 minutes (`KONTEXT_CONNECT_TIMEOUT` in seconds changes that), and its local listener keeps running even if your command is stopped, so a timeout on your side does not lose the user's Allow. Prefer a command timeout of at least that long, or run it in the background. If your command ended before approval, run the same command again: it reuses the open approval and prints the same URL, or continues straight away once the user has approved. If the browser ever showed "127.0.0.1 refused to connect" after Allow, run the helper again and ask the user to reload that page. After 15 minutes the link stops working; run it again and relay the new URL. When the helper prints `Connected.`, carry on with the user's request in the same turn; never stop to ask the user to confirm the approval. A browser that is already signed in may approve without a click, and approval goes to the workspace open in that browser. So after the first connection in a conversation, read `GET /api/v1/organizations/current/directory/reconciliation` and say which workspace you reached by naming its Macs (`deviceLabel`, `userEmail`; skip this on a 403), for example "Connected to the workspace with MacBook Pro by Michel". If the user says it is the wrong one, stop, delete the cached tokens (`rm -f "${XDG_CACHE_HOME:-$HOME/.cache}"/kontext-skill/token-*.json`, which keeps any pending approval), ask them to switch workspace in the dashboard, and connect again. The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
+The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The approval stays open for 15 minutes (`KONTEXT_CONNECT_TIMEOUT` in seconds changes that), and its local listener keeps running even if your command is stopped, so a timeout on your side does not lose the user's Allow. Prefer a command timeout of at least that long, or run it in the background. If your command ended before approval, run the same command again: it reuses the open approval and prints the same URL, or continues straight away once the user has approved. If the browser ever showed "127.0.0.1 refused to connect" after Allow, run the helper again and ask the user to reload that page. After 15 minutes the link stops working; run it again and relay the new URL. When the helper prints `Connected.`, carry on with the user's request in the same turn; never stop to ask the user to confirm the approval. A browser that is already signed in may approve without a click, and approval goes to the workspace open in that browser. So after the first connection in a conversation, read `GET /api/v1/organizations/current` (returns `{id, name}`; any scope is enough) and say which workspace you reached by name, for example "Connected to Acme". If that endpoint answers 404 (an older server), name the workspace's Macs from `GET /api/v1/organizations/current/directory/reconciliation` instead (`deviceLabel`, `userEmail`; skip this on a 403), for example "Connected to the workspace with MacBook Pro by Michel". If the user says it is the wrong one, stop, delete the cached tokens (`rm -f "${XDG_CACHE_HOME:-$HOME/.cache}"/kontext-skill/token-*.json`, which keeps any pending approval), and connect again: the approval page lets them pick the workspace (on an older server, ask them to switch workspace in the dashboard first). The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
 
 Connect once: permissions live under **Settings → Agent access** and changes apply to the next request without reconnecting. New workspaces start with **Policy author** (every read plus policy write), so a connected agent can propose policies right away. Workspaces created earlier may still be read-only; there an admin switches the preset to Policy author before policy writes work. The five areas are **Policies, Directory, Settings, Logs, and Deployments**. Use service accounts when each agent needs different access or when running in CI.
 
@@ -55,6 +55,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Area | Endpoints | Scope |
 |---|---|---|
 | Directory / SCIM | `GET/POST /organizations/current/directory/scim-tokens`, `POST …/scim-tokens/{sha256}/revoke`, `GET …/directory/status`, `…/groups`, `…/reconciliation` | `management:directory:read` / `:write` |
+| Workspace | `GET /organizations/current` (`id`, `name` of the workspace this token acts in) | any |
 | Agent access | `GET /organizations/current/agent-access` (PATCH requires an admin dashboard session) | `management:settings:read` |
 | Org settings | `GET/PATCH /policy/settings` (`policyEnabled`, `payloadCaptureMode`) | `management:settings:read` / `:write` |
 | Policy state and history | `GET /policy/deployment` (both slots + ETag), `GET /policy`, `GET /policy/versions`, `GET /policy/versions/{id}`, `GET /policy/rule-templates` | `management:policy:read` |
@@ -177,7 +178,8 @@ recorded calls would have done under the candidate.
    promoting; a paused workspace stays paused.
 
 5. **Roll back if needed.** To enforce an earlier version again, send
-   `{"policyVersionId":"<earlier version ID>"}` to `POST /policy/deployment/rollback`
+   `{"policyVersionId":"<earlier version ID>"}` (the one enforced before is
+   `previousEnforcedVersionId` in `/policy/versions`) to `POST /policy/deployment/rollback`
    with the current ETag. It creates no new version and leaves the observing
    version as it is. A version's `changes` describe it against its own parent, not
    against what is enforced now, so read both versions with `/policy/versions/{id}`
@@ -399,20 +401,26 @@ them: show it, ask one question, and enforce only after a clear yes.
 ### Roll back enforcement
 
 Treat **"Roll back"**, "undo the last enforcement", and similar requests as this
-workflow. The versions list does not record which versions were enforced in the
-past, so never guess one from its number.
+workflow. `GET /policy/versions` records enforcement: each version's `enforcedPeriods`
+(`from`, `until`; `until` is null while it is still enforced) and
+`previousEnforcedVersionId`, the version enforced right before the current one.
+Never guess a rollback target from a version's number.
 
 1. **Read the state:** `/policy/deployment` (keep the ETag), the enforced
-   version, its parent, and `/policy/versions`. If nothing is enforced, say so
-   and stop.
-2. **Find what the last enforcement added:** list every policy that blocks
-   now, in plain words, with the version that added it and when (walk the
-   `changes` of the enforced version and its ancestors). Promotion saves no
-   version, so history cannot show which policies were enforced together. When
-   this conversation enforced them, use what you enforced. Otherwise suggest
-   the newest batch (consecutive versions by the same creator, minutes apart;
-   one enforcement often covers several versions because each add saves its
-   own), say that it is a guess, and let the user pick from the list.
+   version, and `/policy/versions`. If nothing is enforced, say so and stop.
+2. **Find what the last enforcement changed:** the enforced version's last
+   `enforcedPeriods` entry says when it started blocking. Read
+   `previousEnforcedVersionId` with `/policy/versions/{id}` and compare its full
+   text with the enforced text: policies only in the enforced version started
+   blocking with the last enforcement; policies only in the previous one, or
+   changed, were removed or modified by it. When `previousEnforcedVersionId` is
+   null, nothing else was ever enforced, so every blocking policy came with the
+   last enforcement. List them in plain words with when that enforcement
+   happened. Enforcement history is recorded only from when the server started
+   tracking it: when the field is missing or the enforced version has no
+   `enforcedPeriods`, fall back to walking the `changes` of the enforced version
+   and its ancestors, suggest the newest batch (consecutive versions by the same
+   creator, minutes apart), say that it is a guess, and let the user pick.
 3. **Offer the default, ask once:** move those policies back to observing with
    `{"action":"stop","policyId":"<exact @id>"}` per policy. They keep
    observing and nothing is lost, so they can be enforced again later. A
@@ -425,8 +433,8 @@ past, so never guess one from its number.
    `stop` only undoes policies that newly started blocking. When the last
    enforcement also modified or removed an enforced policy, or the user asks
    for a specific earlier version, offer `POST /policy/deployment/rollback` to
-   that version instead (the one enforced before is known when this
-   conversation enforced it; otherwise let the user pick from the versions).
+   that version instead: `previousEnforcedVersionId` by default, or the version
+   the user named. Only versions with `enforcedPeriods` can be rolled back to.
    Present the policies it would remove and restore (step 5 of
    [Change Cedar policy safely](#change-cedar-policy-safely)), and say that the
    rollback leaves the observing version as it is: read it and say whether the
