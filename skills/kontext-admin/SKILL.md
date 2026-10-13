@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.8.1"
+  version: "0.9.0"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -17,7 +17,7 @@ You are operating a Kontext organization on behalf of one of its admins, through
 scripts/kontext-api.sh GET /api/v1/policy/deployment
 ```
 
-The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The approval stays open for 15 minutes (`KONTEXT_CONNECT_TIMEOUT` in seconds changes that), and its local listener keeps running even if your command is stopped, so a timeout on your side does not lose the user's Allow. Prefer a command timeout of at least that long, or run it in the background. If your command ended before approval, run the same command again: it reuses the open approval and prints the same URL, or continues straight away once the user has approved. If the browser ever showed "127.0.0.1 refused to connect" after Allow, run the helper again and ask the user to reload that page. After 15 minutes the link stops working; run it again and relay the new URL. The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
+The first call opens the user's **browser to approve access** (OAuth authorization code + PKCE, loopback callback): relay the printed URL to the user verbatim — they click Allow in their Kontext dashboard (where they're already signed in) and the token lands in the helper automatically. Zero codes to type; no secret is ever entered in the terminal or shown in chat. The approval stays open for 15 minutes (`KONTEXT_CONNECT_TIMEOUT` in seconds changes that), and its local listener keeps running even if your command is stopped, so a timeout on your side does not lose the user's Allow. Prefer a command timeout of at least that long, or run it in the background. If your command ended before approval, run the same command again: it reuses the open approval and prints the same URL, or continues straight away once the user has approved. If the browser ever showed "127.0.0.1 refused to connect" after Allow, run the helper again and ask the user to reload that page. After 15 minutes the link stops working; run it again and relay the new URL. When the helper prints `Connected.`, carry on with the user's request in the same turn; never stop to ask the user to confirm the approval. A browser that is already signed in may approve without a click, and approval goes to the workspace open in that browser. So after the first connection in a conversation, read `GET /api/v1/organizations/current` (returns `{id, name}`; any scope is enough) and say which workspace you reached by name, for example "Connected to Acme". If that endpoint answers 404 (an older server), name the workspace's Macs from `GET /api/v1/organizations/current/directory/reconciliation` instead (`deviceLabel`, `userEmail`; skip this on a 403), for example "Connected to the workspace with MacBook Pro by Michel". If the user says it is the wrong one, stop, delete the cached tokens (`rm -f "${XDG_CACHE_HOME:-$HOME/.cache}"/kontext-skill/token-*.json`, which keeps any pending approval), and connect again: the approval page lets them pick the workspace (on an older server, ask them to switch workspace in the dashboard first). The helper requests the scopes needed for the five areas below. The token is cached by API base URL, client ID, and requested scopes; later calls in the same context reuse it.
 
 Connect once: permissions live under **Settings → Agent access** and changes apply to the next request without reconnecting. New workspaces start with **Policy author** (every read plus policy write), so a connected agent can propose policies right away. Workspaces created earlier may still be read-only; there an admin switches the preset to Policy author before policy writes work. The five areas are **Policies, Directory, Settings, Logs, and Deployments**. Use service accounts when each agent needs different access or when running in CI.
 
@@ -55,6 +55,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Area | Endpoints | Scope |
 |---|---|---|
 | Directory / SCIM | `GET/POST /organizations/current/directory/scim-tokens`, `POST …/scim-tokens/{sha256}/revoke`, `GET …/directory/status`, `…/groups`, `…/reconciliation` | `management:directory:read` / `:write` |
+| Workspace | `GET /organizations/current` (`id`, `name` of the workspace this token acts in) | any |
 | Agent access | `GET /organizations/current/agent-access` (PATCH requires an admin dashboard session) | `management:settings:read` |
 | Org settings | `GET/PATCH /policy/settings` (`policyEnabled`, `payloadCaptureMode`) | `management:settings:read` / `:write` |
 | Policy state and history | `GET /policy/deployment` (both slots + ETag), `GET /policy`, `GET /policy/versions`, `GET /policy/versions/{id}`, `GET /policy/rule-templates` | `management:policy:read` |
@@ -177,7 +178,8 @@ recorded calls would have done under the candidate.
    promoting; a paused workspace stays paused.
 
 5. **Roll back if needed.** To enforce an earlier version again, send
-   `{"policyVersionId":"<earlier version ID>"}` to `POST /policy/deployment/rollback`
+   `{"policyVersionId":"<earlier version ID>"}` (the one enforced before is
+   `previousEnforcedVersionId` in `/policy/versions`) to `POST /policy/deployment/rollback`
    with the current ETag. It creates no new version and leaves the observing
    version as it is. A version's `changes` describe it against its own parent, not
    against what is enforced now, so read both versions with `/policy/versions/{id}`
@@ -209,11 +211,15 @@ routes; the Policy author preset does not separate authoring from enforcement.
 ### Propose policies from logs and risks
 
 The onboarding prompt is **"Check logs, combine with risks, and propose
-policies."** Treat it, and any request like it, as this workflow, and run every
-step below in one go. The prompt is the request to write: adding to the
-observing version blocks nothing, so present the list and add it in the same run
-instead of stopping to ask for acceptance. Nothing is enforced unless the user
-asks for enforcement, in this prompt or a later one.
+policies."** Treat it, and any request to find risks or unusual behaviour and
+create policies, as this workflow. It is a conversation with one question in it:
+read everything first (steps 1 to 7), then show the user what you found and ask
+whether it was intended (step 8), and add policies only for what they did not
+intend (step 9). Ask once, with every finding in one numbered list, so the user
+answers in one reply; do not ask about each finding separately or before you
+have read the logs. Skip the question only when the user already said to add
+everything without asking. Nothing is enforced unless the user asks for
+enforcement, in this prompt or a later one.
 
 1. **Read the current state:** `/policy/deployment` (keep its ETag), each non-null
    `/policy/versions/{id}`, and `/policy/versions`. Note which policy IDs are
@@ -228,7 +234,18 @@ asks for enforcement, in this prompt or a later one.
    `provider`, `toolName`, `operation`, `decisionResult`, `installationId`), and
    `GET /enterprise/dashboard/risk/summary` plus `…/risk/findings` for the same
    window. Combine them: which tools and resources are used, by which endpoints,
-   what was flagged and how severely, and what was already blocked.
+   what was flagged and how severely, and what was already blocked. First
+   describe what normal looks like (the few tools and providers that make up
+   most calls), then look for what stands out against it, even when no risk
+   finding flagged it:
+   - writes that are hard to undo: merges, pushes to protected branches,
+     releases and workflow runs, deletes, permission or settings changes;
+   - anything that leaves the workspace: email or chat sends, uploads, public
+     posts, `curl` or similar to unfamiliar hosts;
+   - secrets and credentials: reads of `.env`, keychains or token files, and
+     commands that print or copy them;
+   - tools, providers or Macs seen only a few times, sudden bursts, and
+     activity at unusual hours for that Mac.
 4. **List the endpoints:** `GET /organizations/current/directory/reconciliation`
    returns every managed endpoint (Mac) with its `installationId`, `deviceLabel`,
    `userEmail` and `lastSeenAt`. If it answers 403, use the distinct
@@ -247,7 +264,8 @@ asks for enforcement, in this prompt or a later one.
    this workspace, such as a particular MCP tool, a provider no preset names, or
    risky calls coming from one endpoint. Write each as exactly one static
    `forbid` statement with a unique `@id("custom:...")` and an
-   `@description("...")`, modelled on the catalog's raw `cedar`, with
+   `@description("...")` that says what it blocks, never its mode (the same
+   text stays when the policy moves from observing to enforcing), modelled on the catalog's raw `cedar`, with
    `action == Kontext::Action::"ToolUse"`. How to name the tool:
    - Shell commands are `Kontext::Tool::"shell"`; match the parsed
      `context.shell.facts` the way the presets do.
@@ -277,37 +295,41 @@ asks for enforcement, in this prompt or a later one.
    without a tier slip past: add the provider's block-unrecognized preset when
    the catalog has one, otherwise match the tool by resource instead. Drop a policy you cannot make valid and
    say why.
-8. **Present the list,** most important first: for each policy, the logged usage
-   or risk it answers (with counts), preset ID or the custom raw policy, scope
-   (all endpoints, one endpoint, one agent), and what it would block. Keep it to
-   the few policies that matter; three to six is typical.
-9. **Add them to observing** right away, one `POST /policy/actions`
-   `{"action":"add",...}` per policy, following
+8. **Show what you found and ask whether it was intended.** Start with one line
+   on normal activity (calls, Macs, agents, main tools over the window). Then a
+   numbered list of findings, most important first, three to six is typical.
+   For each: what happened in plain words (not policy IDs), how often, when,
+   which Mac and agent, why it might matter, and the policy you would observe
+   for it with its scope and what it would block. Add an example call where it
+   helps the user recognise it. End with one question, such as "Were any of
+   these intended? Reply with the numbers to leave alone, or say add all."
+   Mention that adding a policy only observes, so nothing blocks yet. Then stop
+   and wait for the answer. If nothing stands out, say so, name the one or two
+   presets still worth observing for the tools in use, and ask the same way.
+9. **Add what the user did not intend** to observing, one `POST /policy/actions`
+   `{"action":"add",...}` per policy. Leave out the findings they said were
+   intended and say that you did. Follow
    [Change Cedar policy safely](#change-cedar-policy-safely) for ETags and
    errors. Before each add, read the current version's text and skip a policy
    only when it is already there for the same scope (companion guards added by
    an earlier preset count; they apply to the scope of that preset). Handle a
    409 `policy_already_present` as described there: done when every requested
    scope exists, otherwise add the missing scopes.
-10. **Replay** the resulting observing version over 30 days (or 7 or 14) and
-    report per policy what it would have blocked and what was not replayable.
+10. **Replay** the resulting observing version over 30 days (or 7 or 14). For
+    each policy, check that it catches the calls that motivated it and say so.
+    Replay reports changed verdicts only, so a call another enforced policy
+    already blocks shows no change; say that, rather than that the rule does
+    not match. When the motivating calls were not replayable, or were
+    replayed as allowed, say that plainly instead of implying the policy
+    works, and fix the rule when you can.
 11. **Finish.** If the user did not ask for enforcement, say which version is
-    observing (by number), that nothing blocks yet, and that they can say
-    **"Enforce them"**. If they asked, in this prompt or later,
-    enforce what this run added. When the observing version holds only this
-    run's changes, promote it as described in step 4 of
-    [Change Cedar policy safely](#change-cedar-policy-safely). When it also held
-    earlier changes, promote enforces those too, so enforce this run's policies
-    one by one with `enforce` instead, passing the exact `@id` of each copy you
-    added as it appears in the version text (scoped copies carry their
-    `:endpoint:` or `:agent:` suffix). A base preset ID enforces every copy of
-    that preset, including older ones, so use it only when no other copy
-    exists. Include any block-unrecognized guard a custom policy of this run
-    relies on, even if it was already observing, since nothing enforces it
-    for a custom policy. Do this unless the user explicitly approved the
-    whole version after you listed the earlier changes. Say that an
-    observe-only workspace now enforces, and name the enforced version. Either
-    way, say that each Mac applies a change at its next check-in.
+    observing (by number), that nothing blocks yet, and suggest letting it
+    observe a few days of normal work so the evidence covers it. The next
+    request is **"Enforce the observing policies"**, which runs
+    [Enforce observing policies](#enforce-observing-policies). If they asked
+    for enforcement in this prompt, run that workflow now for what this run
+    added; its review is short when the replay above already covers it, but
+    still ask before enforcing.
 
 On a 403 `insufficient_scope` for policy write, report `missingScopes` and the
 server's `hint` verbatim as described above. When you connected through browser
@@ -315,6 +337,128 @@ approval with the default scopes, the likely cause is a workspace still set to
 read-only: an admin can choose **Policy author** under **Settings → Agent access**.
 A service account or a narrower `KONTEXT_SCOPES` request has its own grants, which
 that setting does not change.
+
+### Enforce observing policies
+
+Treat **"Enforce the observing policies"**, "enforce them", and any request to
+move policies from observing to enforcing as this workflow. Enforcing blocks
+real calls on real Macs, so the user decides with the evidence in front of
+them: show it, ask one question, and enforce only after a clear yes.
+
+1. **Read the state:** `/policy/deployment` (keep the ETag), each non-null
+   `/policy/versions/{id}`, and `/policy/versions`. In an observe-only workspace
+   `policyVersionId` is what observes. If nothing is observing, say so and
+   offer [Propose policies from logs and risks](#propose-policies-from-logs-and-risks).
+2. **List what would change:** compare the full observing text with the
+   enforced text (in an observe-only workspace, with the catalog's
+   `default-permit`). Name every policy that would start blocking, in plain
+   words, with its scope and when it was added or last changed (the `createdAt` of the
+   latest version whose `changes` added or modified it). That is not when it
+   started observing, which history does not record, so do not call it an
+   observation period. Also name every
+   enforced policy the observing version removes or modifies: promoting the
+   whole version removes or changes those protections too.
+3. **Gather the evidence:** check demo mode as in the propose workflow, then
+   replay over 30 days as in step 3 of
+   [Change Cedar policy safely](#change-cedar-policy-safely), and read
+   `/policy/blocked?days=7`. Per policy: how many recorded calls it would have
+   blocked, by which agents and Macs, with one or two examples, and whether any
+   of those look like normal work it would now break.
+4. **Judge the evidence and say it in one line per policy:** replay checks
+   the rule against recorded calls, so its age does not matter. Enough when
+   the replay window holds several days of normal work and the rule matched
+   the calls it was written for; thin when it matched nothing, most calls were
+   not replayable, or the window is only a day or two of activity. Recommend
+   waiting on thin policies, but let the user decide.
+5. **Ask once:** what enforcing does (these agents on these Macs can no longer
+   do these things; an observe-only workspace switches to enforcing; each Mac
+   applies it at its next check-in; "Roll back" undoes it), then one question
+   such as "Enforce these 3 policies now?" When some are thin, offer to enforce
+   only the others. A preset and the companion guard the server enforces with
+   it, or a custom policy and the guard it relies on, are one choice: list them
+   together and never offer one without the other. Then stop and wait. A yes the user gave earlier in the
+   conversation counts only if they had seen this evidence.
+6. **Enforce what the user approved.** All of the observing version: promote it
+   (step 4 of [Change Cedar policy safely](#change-cedar-policy-safely)). Only
+   some policies: `{"action":"enforce","policyId":"<exact @id>"}` per policy,
+   using the exact `@id` of each copy as it appears in the version text (scoped
+   copies carry their `:endpoint:` or `:agent:` suffix); an `@id` without a
+   scope suffix, preset or custom, is also the base ID and enforces every copy,
+   so use it only when the user approved every copy. Include any block-unrecognized guard a custom policy relies on.
+   Promote only when the user approved every change from step 2, removals
+   and modifications included. Offer a partial pick only among new `forbid`
+   policies, each taken whole with every scoped copy and its guards, since
+   replay counts copies under their base ID; those counts stay valid on their
+   own.
+   When the observing version modifies or removes a policy or changes a
+   `permit`, offer the whole version or nothing, because enforcing part of it
+   gives a set the replay did not check.
+7. **Confirm:** re-read the deployment, name the enforced version by number,
+   list what now blocks, and say that each Mac applies it at its next check-in.
+   If the returned `rolloutMode` is `disabled`, say instead that nothing blocks
+   until enforcement is resumed in the dashboard.
+
+### Roll back enforcement
+
+Treat **"Roll back"**, "undo the last enforcement", and similar requests as this
+workflow. `GET /policy/versions` records enforcement: each version's `enforcedPeriods`
+(`from`, `until`; `until` is null while it is still enforced) and
+`previousEnforcedVersionId`, the version enforced right before the current one.
+Never guess a rollback target from a version's number.
+
+1. **Read the state:** `/policy/deployment` (keep the ETag), the enforced
+   version, and `/policy/versions`. If nothing is enforced, say so and stop.
+2. **Find what the last enforcement changed:** one approval can span several
+   enforced versions, because enforcing only some policies saves one version
+   per policy. When this conversation enforced them, the version enforced
+   before that approval is the baseline. Otherwise, order every
+   `enforcedPeriods` entry across the versions by `from`, starting from the
+   enforced version's open period; walk back while each period started within
+   a few minutes of the next and ended when the next began. Those periods are
+   probably one approval. The baseline is `previousEnforcedVersionId` when
+   there is a single such period. When there are several, timing shows only
+   that they followed each other, not that one approval made them: show both
+   the last change alone (`previousEnforcedVersionId`) and the grouped batch
+   (the version enforced before the first of them), say the grouping is read
+   from the timing, and let the user pick in the step 3 question. Read each baseline with
+   `/policy/versions/{id}` and compare its full text with the enforced text:
+   policies only in the enforced version started blocking with that approval;
+   policies only in the baseline, or changed, were removed or modified by it.
+   When there is no baseline, nothing was enforced before, so compare with the
+   catalog's `default-permit` instead. List the differences in plain words
+   with when that enforcement happened. Enforcement history is recorded only from when the server started
+   tracking it: when the field is missing or the enforced version has no
+   `enforcedPeriods`, fall back to walking the `changes` of the enforced version
+   and its ancestors, suggest the newest batch (consecutive versions by the same
+   creator, minutes apart), say that it is a guess, and let the user pick.
+3. **Offer the default, ask once:** move those policies back to observing with
+   `{"action":"stop","policyId":"<exact @id>"}` per policy. They keep
+   observing and nothing is lost, so they can be enforced again later. A
+   policy's `@id` without a scope suffix, preset or custom, is also its base
+   ID, and `stop` on a base ID stops every copy, scoped ones included; when
+   other copies are enforced, name them all in the question. Ask one question,
+   such as "Stop blocking these 2 policies and keep them observing?", then wait
+   for a yes.
+
+   `stop` only undoes policies that newly started blocking. When the last
+   enforcement also modified or removed an enforced policy, or the user asks
+   for a specific earlier version, offer `POST /policy/deployment/rollback` to
+   that version instead: the baseline from step 2 by default, or the version
+   the user named. When the server returns `enforcedPeriods`, only versions
+   with a period can be rolled back to; on an older server without it, offer
+   the versions from the step 2 fallback and let the server's 422 reject one
+   that is not valid.
+   When there is no baseline and the enforced version differs from
+   `default-permit` by more than added `forbid` policies (a restricted or
+   removed `permit`), neither `stop` nor rollback undoes it: the workspace
+   keeps denying calls outside the narrowed permit. Say so, and tell the user
+   to switch the workspace back to observing in the dashboard.
+   Present the policies it would remove and restore (step 5 of
+   [Change Cedar policy safely](#change-cedar-policy-safely)), and say that the
+   rollback leaves the observing version as it is: read it and say whether the
+   undone changes still observe there. Then ask once and wait.
+4. **Apply and confirm:** after the yes, apply it, re-read the deployment, say
+   what no longer blocks, and that each Mac applies it at its next check-in.
 
 ### Verify policy behavior through decisions
 
