@@ -117,7 +117,7 @@ release_other_approvals() { # one loopback port: a new sign-in replaces any othe
     # ignores this and closes on its own, so an approved sign-in still completes.
     listener=$(pending_get ready)
     if worker_alive && [ ! -f "$PENDING/result" ] && [ -n "$listener" ] &&
-      ps -o command= -p "$listener" 2>/dev/null | grep -q '^node'; then
+      [ "$(ps -o pgid= -p "$listener" 2>/dev/null | tr -d ' ')" = "$(pending_get pid)" ]; then # still the worker's own listener
       kill -TERM "$listener" 2>/dev/null || true
       for i in $(seq 25); do worker_alive || break; sleep 0.2; done
       [ "$(pending_get result)" != "replaced" ] ||
