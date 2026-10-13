@@ -160,10 +160,10 @@ recorded calls would have done under the candidate.
    keeps enforcement paused. Enforcing a preset also enforces its observing
    companion guard; the response's `changedPolicyIds` lists both.
    Stop with `{"action":"stop","policyId":"..."}` to move it back to observing.
-   Stopping a preset also stops the guard it brought, unless another enforced
-   preset with the same scope still needs it; `changedPolicyIds` lists both.
-   When nothing blocks after a stop or an enforced delete, the workspace
-   observes again: the response's `rolloutMode` is `observe`.
+   Stopping a preset does not stop the guard enforced with it, since a guard
+   can also be enforced on its own; stop the guard separately when it should
+   go too. When nothing blocks after a stop or an enforced delete, the
+   workspace observes again: the response's `rolloutMode` is `observe`.
    Remove with `{"action":"delete","policyId":"...","where":"observing"}` or
    `"where":"enforced"`; deleting an enforced policy also removes its observing copies.
 
@@ -463,7 +463,9 @@ Never guess a rollback target from a version's number.
    ID, and `stop` on a base ID stops every copy, scoped ones included; when
    other copies are enforced, name them all in the question. Ask one question,
    such as "Stop blocking these 2 policies and keep them observing?", then wait
-   for a yes.
+   for a yes. A guard that started blocking with that enforcement is one of
+   those policies: list it and stop it too, unless another enforced preset
+   still needs it, and then say it stays.
 
    `stop` only undoes policies that newly started blocking. When the last
    enforcement also modified or removed an enforced policy, or the user asks
