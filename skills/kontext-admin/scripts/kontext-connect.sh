@@ -109,16 +109,19 @@ stop_worker() { # let a worker that is exchanging a code finish, then stop it
 }
 
 release_other_approvals() { # one loopback port: a new sign-in replaces any other one still waiting
-  local own=$PENDING p i
+  local own=$PENDING p i listener
   for p in "$CACHE_DIR"/token-*.pkce; do
     [ -d "$p" ] && [ "$p" != "$own" ] || continue
     PENDING=$p
-    # A worker whose listener has closed is exchanging an approved code: let it finish.
-    if worker_alive && [ ! -f "$PENDING/result" ] && [ ! -f "$PENDING/exchanging" ]; then
-      kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
+    # Ask its listener to step aside. A listener that already took its callback
+    # ignores this and closes on its own, so an approved sign-in still completes.
+    listener=$(pending_get ready)
+    if worker_alive && [ ! -f "$PENDING/result" ] && [ -n "$listener" ] &&
+      ps -o command= -p "$listener" 2>/dev/null | grep -q '^node'; then
+      kill -TERM "$listener" 2>/dev/null || true
       for i in $(seq 25); do worker_alive || break; sleep 0.2; done
-      rm -rf "$PENDING"
-      echo "kontext-connect: replaced an earlier sign-in that was still waiting; its link no longer works." >&2
+      [ "$(pending_get result)" != "replaced" ] ||
+        echo "kontext-connect: replaced an earlier sign-in that was still waiting; its link no longer works." >&2
     fi
   done
   PENDING=$own
@@ -154,6 +157,7 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
         res.end(page("Kontext: this approval link is out of date.", "Use the latest link your agent printed."));
         return;
       }
+      answered = true;
       const error = u.searchParams.get("error");
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(error ? page("Kontext: not connected.", "Return to your agent for details.") : page("Kontext: connected.", "You can close this tab and return to your agent."));
@@ -161,12 +165,14 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
       srv.close(() => process.exit(0));
     });
     srv.on("error", (e) => { console.log(JSON.stringify({ error: "listener", error_description: String(e.message) })); process.exit(1); });
-    srv.listen(port, "127.0.0.1", () => fs.writeFileSync(ready, ""));
+    let answered = false; // a newer sign-in sends SIGTERM; once the callback is in, finish instead
+    process.on("SIGTERM", () => { if (!answered) { console.log(JSON.stringify({ error: "replaced" })); process.exit(1); } });
+    srv.listen(port, "127.0.0.1", () => fs.writeFileSync(ready, String(process.pid)));
     setTimeout(() => { console.log(JSON.stringify({ error: "timeout" })); process.exit(1); }, seconds * 1000);
   ' "$CALLBACK_PORT" "$remaining" "$state" "$PENDING/ready") || true
-  : > "$PENDING/exchanging" # listener closed: a new sign-in must not stop this worker now
   err=$(printf '%s' "$cb" | jq -r '.error // empty' 2>/dev/null || echo listener)
   [ "$err" = "timeout" ] && finish timeout
+  [ "$err" = "replaced" ] && finish replaced
   [ -n "$err" ] && finish "$err: $(printf '%s' "$cb" | jq -r '.error_description // empty' 2>/dev/null)"
   code=$(printf '%s' "$cb" | jq -r '.code // empty')
   [ -n "$code" ] || finish "error: no authorization code returned."
@@ -188,7 +194,7 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
 
 start_worker() { # detached (setsid via node), so stopping this command keeps it
   local i
-  rm -f "$PENDING/pid" "$PENDING/pid_start" "$PENDING/ready" "$PENDING/exchanging"
+  rm -f "$PENDING/pid" "$PENDING/pid_start" "$PENDING/ready"
   KONTEXT_PKCE_WORKER=1 node -e '
     require("child_process").spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: "ignore" }).unref();
   ' bash "$SELF"
@@ -304,6 +310,7 @@ await_approval() { # uses own_state and result from connect_pkce
     ok) echo "  Connected. You can run Kontext commands now." ;;
     timeout) echo "kontext-connect: no approval within $(wait_label "$TIMEOUT"); the approval link has stopped working. Run connect again for a new link." >&2; exit 1 ;;
     listener:*) echo "kontext-connect: $result" >&2; echo "kontext-connect: could not listen on 127.0.0.1:$CALLBACK_PORT (port in use?)" >&2; exit 1 ;;
+    replaced) echo "kontext-connect: a newer Kontext sign-in replaced this one; run connect again." >&2; exit 1 ;;
     error:*) echo "kontext-connect: ${result#error: }" >&2; exit 1 ;;
     *) echo "kontext-connect: $result" >&2; exit 1 ;;
   esac

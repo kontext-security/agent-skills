@@ -37,6 +37,8 @@ class FakeAuthServer(BaseHTTPRequestHandler):
         code, verifier = form["code"][0], form["code_verifier"][0]
         assert form["redirect_uri"] == [CALLBACK] and form["client_id"] == ["kontext-cli"]
         challenge = self.codes.pop(code, None)
+        if code.startswith("slow"):
+            time.sleep(2)  # an approved exchange still in flight
         digest = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         ok = challenge is not None and challenge == digest
         self.exchanges.append(ok)
@@ -291,28 +293,25 @@ with tempfile.TemporaryDirectory() as directory:
         assert get(approve(old_url, "stale")) == 400
         assert get(approve(auth_url(output), "replaced")) == 200
         assert "Connected." in finished(process, log)
-        assert not any(p.suffix == ".pkce" for p in token_file.parent.iterdir())
+        other_pending = token_path({**env, "KONTEXT_API_BASE": "http://127.0.0.1:9"}).with_suffix(".pkce")
+        assert (other_pending / "result").read_text().strip() == "replaced"
+        subprocess.run(["rm", "-rf", str(other_pending)])
         reset()
 
-        # 7c. Another entry's worker that already closed its listener is exchanging
-        # an approved code: a new sign-in must leave it to finish.
-        exchanging = subprocess.Popen(["sleep", "60"], start_new_session=True)
-        other_pending = token_file.parent / "token-exchanging.pkce"
-        try:
-            other_pending.mkdir(mode=0o700)
-            lstart = subprocess.run(["ps", "-o", "lstart=", "-p", str(exchanging.pid)], capture_output=True, text=True).stdout
-            (other_pending / "pid").write_text(f"{exchanging.pid}\n")
-            (other_pending / "pid_start").write_text(lstart)
-            (other_pending / "exchanging").write_text("")
-            process, log = start()
-            output = wait_for(process, log, "Waiting for approval (up to 15 minutes)")
-            assert "replaced" not in output and exchanging.poll() is None and other_pending.exists(), output
-            assert get(approve(auth_url(output), "alongside")) == 200
-            assert "Connected." in finished(process, log)
-        finally:
-            exchanging.kill()
-            exchanging.wait()
-            subprocess.run(["rm", "-rf", str(other_pending)])
+        # 7c. A sign-in for another cache entry whose callback already arrived is
+        # exchanging its code: a new sign-in must let it finish.
+        narrow = {"KONTEXT_SCOPES": "management:logs:read"}
+        other, other_log = start(narrow)
+        other_url = auth_url(wait_for(other, other_log, "Waiting for approval"))
+        assert get(approve(other_url, "slow-exchange")) == 200
+        process, log = start()
+        output = wait_for(process, log, "Waiting for approval (up to 15 minutes)")
+        assert "replaced" not in output, output
+        assert "Connected." in finished(other, other_log)
+        assert json.loads(token_path({**env, **narrow}).read_text())["access_token"] == "token-slow-exchange"
+        assert get(approve(auth_url(output), "alongside")) == 200
+        assert "Connected." in finished(process, log)
+        token_path({**env, **narrow}).unlink()
         reset()
 
         # 8. Custom and invalid timeouts.
