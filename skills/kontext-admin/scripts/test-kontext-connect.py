@@ -251,13 +251,13 @@ with tempfile.TemporaryDirectory() as directory:
                 (pending / name).write_text(value + "\n")
             dead = subprocess.Popen(["true"])
             dead.wait()
-            os.symlink(f"{int(time.time())} {dead.pid}", str(pending) + ".lock")
+            os.symlink(f"{int(time.time())} {dead.pid}", str(token_file.parent / "pkce.lock"))
             process, log = start()
             url = auth_url(wait_for(process, log, "Waiting for approval (up to 15 minutes)"))
             assert bystander.poll() is None, "signalled a process that is not the worker"
             assert get(approve(url, "leftovers")) == 200
             assert "Connected." in finished(process, log)
-            assert not os.path.lexists(str(pending) + ".lock")
+            assert not os.path.lexists(str(token_file.parent / "pkce.lock"))
         finally:
             bystander.kill()
             bystander.wait()
@@ -294,6 +294,26 @@ with tempfile.TemporaryDirectory() as directory:
         assert not any(p.suffix == ".pkce" for p in token_file.parent.iterdir())
         reset()
 
+        # 7c. Another entry's worker that already closed its listener is exchanging
+        # an approved code: a new sign-in must leave it to finish.
+        exchanging = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        other_pending = token_file.parent / "token-exchanging.pkce"
+        try:
+            other_pending.mkdir(mode=0o700)
+            lstart = subprocess.run(["ps", "-o", "lstart=", "-p", str(exchanging.pid)], capture_output=True, text=True).stdout
+            (other_pending / "pid").write_text(f"{exchanging.pid}\n")
+            (other_pending / "pid_start").write_text(lstart)
+            process, log = start()
+            output = wait_for(process, log, "Waiting for approval (up to 15 minutes)")
+            assert "replaced" not in output and exchanging.poll() is None and other_pending.exists(), output
+            assert get(approve(auth_url(output), "alongside")) == 200
+            assert "Connected." in finished(process, log)
+        finally:
+            exchanging.kill()
+            exchanging.wait()
+            subprocess.run(["rm", "-rf", str(other_pending)])
+        reset()
+
         # 8. Custom and invalid timeouts.
         process, log = start({"KONTEXT_CONNECT_TIMEOUT": "1"})
         output = finished(process, log, 1)
@@ -302,7 +322,7 @@ with tempfile.TemporaryDirectory() as directory:
         result = subprocess.run(["bash", str(script)], env={**env, "KONTEXT_CONNECT_TIMEOUT": "soon"}, capture_output=True, text=True, timeout=10)
         assert result.returncode == 1 and "must be a positive number of seconds" in result.stderr, result.stderr
         print("listener survives a killed command; reruns reuse the approval and its verifier; parallel runs and parallel restarts share one listener; unwritable cache fails; expired approval renews; stale PID and lock are safe; "
-              "INT/TERM/HUP exit codes; denial, busy port, stale approval for another base replaced, 15 minute default and custom timeout")
+              "INT/TERM/HUP exit codes; denial, busy port, stale approval for another base replaced, in-flight exchange spared, 15 minute default and custom timeout")
     finally:
         for process in started:
             try:

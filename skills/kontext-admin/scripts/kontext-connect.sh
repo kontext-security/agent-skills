@@ -78,11 +78,12 @@ worker_alive() { # the recorded worker, by PID and start time (PIDs get reused);
     [ "$(proc_start "$pid")" = "$(pending_get pid_start)" ]
 }
 
-# Every change to $PENDING (create, resume, restart, discard) happens under one
-# short-lived lock; waiting for the human happens outside it. The lock is a
-# symlink naming its creation time and holder, created atomically; a lock whose
-# holder is gone or that is older than a minute is broken.
-LOCK="$PENDING.lock"
+# Every change to a pending approval (create, resume, restart, discard, replace)
+# happens under one short-lived lock shared by all cache entries, since they
+# share one callback port; waiting for the human happens outside it. The lock is
+# a symlink naming its creation time and holder, created atomically; a lock
+# whose holder is gone or that is older than a minute is broken.
+LOCK="$CACHE_DIR/pkce.lock"
 LOCKED=""
 lock_pending() {
   local i info now
@@ -107,12 +108,15 @@ stop_worker() { # let a worker that is exchanging a code finish, then stop it
   for i in $(seq 25); do worker_alive || break; sleep 0.2; done
 }
 
+port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$CALLBACK_PORT") 2>/dev/null; }
+
 release_other_approvals() { # one loopback port: a new sign-in replaces any other one still waiting
   local own=$PENDING p i
   for p in "$CACHE_DIR"/token-*.pkce; do
     [ -d "$p" ] && [ "$p" != "$own" ] || continue
     PENDING=$p
-    if worker_alive && [ ! -f "$PENDING/result" ]; then
+    # A worker whose listener has closed is exchanging an approved code: let it finish.
+    if worker_alive && [ ! -f "$PENDING/result" ] && port_busy; then
       kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
       for i in $(seq 25); do worker_alive || break; sleep 0.2; done
       rm -rf "$PENDING"
