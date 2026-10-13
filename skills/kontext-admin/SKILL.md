@@ -415,9 +415,12 @@ Never guess a rollback target from a version's number.
    `enforcedPeriods` entry across the versions by `from`, starting from the
    enforced version's open period; walk back while each period started within
    a few minutes of the next and ended when the next began. Those periods are
-   the last approval, and the version enforced before the first of them is the
-   baseline (with a single period, that is `previousEnforcedVersionId`). Say
-   that the grouping is read from the timing. Read the baseline with
+   probably one approval. The baseline is `previousEnforcedVersionId` when
+   there is a single such period. When there are several, timing shows only
+   that they followed each other, not that one approval made them: show both
+   the last change alone (`previousEnforcedVersionId`) and the grouped batch
+   (the version enforced before the first of them), say the grouping is read
+   from the timing, and let the user pick in the step 3 question. Read each baseline with
    `/policy/versions/{id}` and compare its full text with the enforced text:
    policies only in the enforced version started blocking with that approval;
    policies only in the baseline, or changed, were removed or modified by it.
@@ -441,7 +444,10 @@ Never guess a rollback target from a version's number.
    enforcement also modified or removed an enforced policy, or the user asks
    for a specific earlier version, offer `POST /policy/deployment/rollback` to
    that version instead: the baseline from step 2 by default, or the version
-   the user named. Only versions with `enforcedPeriods` can be rolled back to.
+   the user named. When the server returns `enforcedPeriods`, only versions
+   with a period can be rolled back to; on an older server without it, offer
+   the versions from the step 2 fallback and let the server's 422 reject one
+   that is not valid.
    When there is no baseline and the enforced version differs from
    `default-permit` by more than added `forbid` policies (a restricted or
    removed `permit`), neither `stop` nor rollback undoes it: the workspace
