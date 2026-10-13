@@ -32,7 +32,7 @@ class FakeAuthServer(BaseHTTPRequestHandler):
     exchanges = []
 
     def do_POST(self):
-        assert self.headers.get("User-Agent") == "kontext-skill/0.9.1"
+        assert self.headers.get("User-Agent") == "kontext-skill/0.9.2"
         form = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
         code, verifier = form["code"][0], form["code_verifier"][0]
         assert form["redirect_uri"] == [CALLBACK] and form["client_id"] == ["kontext-cli"]

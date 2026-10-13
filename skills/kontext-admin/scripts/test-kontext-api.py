@@ -27,7 +27,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/oauth2/token":
-            assert self.headers.get("User-Agent") == "kontext-skill/0.9.1"
+            assert self.headers.get("User-Agent") == "kontext-skill/0.9.2"
             payload = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
             if expected_deleted is not None:
                 assert not expected_deleted.exists(), "401 must remove the keyed file before minting"
