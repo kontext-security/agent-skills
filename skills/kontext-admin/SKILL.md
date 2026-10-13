@@ -392,11 +392,16 @@ them: show it, ask one question, and enforce only after a clear yes.
    such as "Enforce these 3 policies now?" When some are thin, offer to enforce
    only the others. A preset and the companion guard the server enforces with
    it, or a custom policy and the guard it relies on, are one choice: list them
-   together and never offer one without the other. Every write preset for
-   GitHub, Jira, Confluence or HubSpot brings that provider's block-unrecognized
-   guard, not only the preset it was added with, so name the guard with each
-   of them, for example "Require human merge, which also blocks GitHub calls
-   Kontext cannot identify". Then stop and wait. A yes the user gave earlier in the
+   together and never offer one without the other. These presets bring their
+   provider's block-unrecognized guard when enforced, whichever preset first
+   added it: `github-read-only`, `protect-git-history`, `require-human-merge`,
+   `protect-releases-and-workflows`, `protect-repository-settings`, the Jira and
+   Confluence `*-read-only`, `block-*-deletion` and `protect-*-administration`
+   presets, `hubspot-read-only` and `protect-hubspot-settings`. Others, such as
+   `block-github-force-push`, bring none. Name the guard with each one that
+   brings it, for example "Require human merge, which also blocks GitHub calls
+   Kontext cannot identify", and trust the enforce response's
+   `changedPolicyIds` over this list. Then stop and wait. A yes the user gave earlier in the
    conversation counts only if they had seen this evidence.
 6. **Enforce what the user approved.** All of the observing version: promote it
    (step 4 of [Change Cedar policy safely](#change-cedar-policy-safely)). Only
