@@ -408,15 +408,22 @@ Never guess a rollback target from a version's number.
 
 1. **Read the state:** `/policy/deployment` (keep the ETag), the enforced
    version, and `/policy/versions`. If nothing is enforced, say so and stop.
-2. **Find what the last enforcement changed:** the enforced version's last
-   `enforcedPeriods` entry says when it started blocking. Read
-   `previousEnforcedVersionId` with `/policy/versions/{id}` and compare its full
-   text with the enforced text: policies only in the enforced version started
-   blocking with the last enforcement; policies only in the previous one, or
-   changed, were removed or modified by it. When `previousEnforcedVersionId` is
-   null, nothing else was ever enforced, so every blocking policy came with the
-   last enforcement. List them in plain words with when that enforcement
-   happened. Enforcement history is recorded only from when the server started
+2. **Find what the last enforcement changed:** one approval can span several
+   enforced versions, because enforcing only some policies saves one version
+   per policy. When this conversation enforced them, the version enforced
+   before that approval is the baseline. Otherwise, order every
+   `enforcedPeriods` entry across the versions by `from`, starting from the
+   enforced version's open period; walk back while each period started within
+   a few minutes of the next and ended when the next began. Those periods are
+   the last approval, and the version enforced before the first of them is the
+   baseline (with a single period, that is `previousEnforcedVersionId`). Say
+   that the grouping is read from the timing. Read the baseline with
+   `/policy/versions/{id}` and compare its full text with the enforced text:
+   policies only in the enforced version started blocking with that approval;
+   policies only in the baseline, or changed, were removed or modified by it.
+   When there is no baseline, nothing was enforced before, so compare with the
+   catalog's `default-permit` instead. List the differences in plain words
+   with when that enforcement happened. Enforcement history is recorded only from when the server started
    tracking it: when the field is missing or the enforced version has no
    `enforcedPeriods`, fall back to walking the `changes` of the enforced version
    and its ancestors, suggest the newest batch (consecutive versions by the same
@@ -433,8 +440,13 @@ Never guess a rollback target from a version's number.
    `stop` only undoes policies that newly started blocking. When the last
    enforcement also modified or removed an enforced policy, or the user asks
    for a specific earlier version, offer `POST /policy/deployment/rollback` to
-   that version instead: `previousEnforcedVersionId` by default, or the version
+   that version instead: the baseline from step 2 by default, or the version
    the user named. Only versions with `enforcedPeriods` can be rolled back to.
+   When there is no baseline and the enforced version differs from
+   `default-permit` by more than added `forbid` policies (a restricted or
+   removed `permit`), neither `stop` nor rollback undoes it: the workspace
+   keeps denying calls outside the narrowed permit. Say so, and tell the user
+   to switch the workspace back to observing in the dashboard.
    Present the policies it would remove and restore (step 5 of
    [Change Cedar policy safely](#change-cedar-policy-safely)), and say that the
    rollback leaves the observing version as it is: read it and say whether the
