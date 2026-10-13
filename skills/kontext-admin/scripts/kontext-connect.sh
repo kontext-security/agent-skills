@@ -20,7 +20,7 @@ unset KONTEXT_CLIENT_ID KONTEXT_CLIENT_SECRET
 source "$(dirname "$0")/kontext-context.sh"
 
 CLIENT_ID="$IDENTITY"
-UA="kontext-skill/0.9.0"
+UA="kontext-skill/0.9.1"
 CALLBACK_PORT=8976
 FLOW="${KONTEXT_CONNECT_FLOW:-pkce}"
 # Approval often goes through a relayed URL or a second device, so wait long.
@@ -78,11 +78,12 @@ worker_alive() { # the recorded worker, by PID and start time (PIDs get reused);
     [ "$(proc_start "$pid")" = "$(pending_get pid_start)" ]
 }
 
-# Every change to $PENDING (create, resume, restart, discard) happens under one
-# short-lived lock; waiting for the human happens outside it. The lock is a
-# symlink naming its creation time and holder, created atomically; a lock whose
-# holder is gone or that is older than a minute is broken.
-LOCK="$PENDING.lock"
+# Every change to a pending approval (create, resume, restart, discard, replace)
+# happens under one short-lived lock shared by all cache entries, since they
+# share one callback port; waiting for the human happens outside it. The lock is
+# a symlink naming its creation time and holder, created atomically; a lock
+# whose holder is gone or that is older than a minute is broken.
+LOCK="$CACHE_DIR/pkce.lock"
 LOCKED=""
 lock_pending() {
   local i info now
@@ -105,6 +106,25 @@ stop_worker() { # let a worker that is exchanging a code finish, then stop it
   for i in $(seq 75); do worker_alive && [ ! -f "$PENDING/result" ] || break; sleep 0.2; done
   ! worker_alive || kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
   for i in $(seq 25); do worker_alive || break; sleep 0.2; done
+}
+
+release_other_approvals() { # one loopback port: a new sign-in replaces any other one still waiting
+  local own=$PENDING p i listener
+  for p in "$CACHE_DIR"/token-*.pkce; do
+    [ -d "$p" ] && [ "$p" != "$own" ] || continue
+    PENDING=$p
+    # Ask its listener to step aside. A listener that already took its callback
+    # ignores this and closes on its own, so an approved sign-in still completes.
+    listener=$(pending_get ready)
+    if worker_alive && [ ! -f "$PENDING/result" ] && [ -n "$listener" ] &&
+      [ "$(ps -o pgid= -p "$listener" 2>/dev/null | tr -d ' ')" = "$(pending_get pid)" ]; then # still the worker's own listener
+      kill -TERM "$listener" 2>/dev/null || true
+      for i in $(seq 25); do worker_alive || break; sleep 0.2; done
+      [ "$(pending_get result)" != "replaced" ] ||
+        echo "kontext-connect: replaced an earlier sign-in that was still waiting; its link no longer works." >&2
+    fi
+  done
+  PENDING=$own
 }
 
 token_valid() {
@@ -137,6 +157,7 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
         res.end(page("Kontext: this approval link is out of date.", "Use the latest link your agent printed."));
         return;
       }
+      answered = true;
       const error = u.searchParams.get("error");
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(error ? page("Kontext: not connected.", "Return to your agent for details.") : page("Kontext: connected.", "You can close this tab and return to your agent."));
@@ -144,11 +165,14 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
       srv.close(() => process.exit(0));
     });
     srv.on("error", (e) => { console.log(JSON.stringify({ error: "listener", error_description: String(e.message) })); process.exit(1); });
-    srv.listen(port, "127.0.0.1", () => fs.writeFileSync(ready, ""));
+    let answered = false; // a newer sign-in sends SIGTERM; once the callback is in, finish instead
+    process.on("SIGTERM", () => { if (!answered) { console.log(JSON.stringify({ error: "replaced" })); process.exit(1); } });
+    srv.listen(port, "127.0.0.1", () => fs.writeFileSync(ready, String(process.pid)));
     setTimeout(() => { console.log(JSON.stringify({ error: "timeout" })); process.exit(1); }, seconds * 1000);
   ' "$CALLBACK_PORT" "$remaining" "$state" "$PENDING/ready") || true
   err=$(printf '%s' "$cb" | jq -r '.error // empty' 2>/dev/null || echo listener)
   [ "$err" = "timeout" ] && finish timeout
+  [ "$err" = "replaced" ] && finish replaced
   [ -n "$err" ] && finish "$err: $(printf '%s' "$cb" | jq -r '.error_description // empty' 2>/dev/null)"
   code=$(printf '%s' "$cb" | jq -r '.code // empty')
   [ -n "$code" ] || finish "error: no authorization code returned."
@@ -223,6 +247,7 @@ connect_pkce() {
   fi
   if ! worker_alive && [ ! -f "$PENDING/result" ]; then
     [ -z "$reuse" ] || restarted=1
+    release_other_approvals
     start_worker
   fi
   local result own_state auth_url remaining=$TIMEOUT
@@ -285,6 +310,7 @@ await_approval() { # uses own_state and result from connect_pkce
     ok) echo "  Connected. You can run Kontext commands now." ;;
     timeout) echo "kontext-connect: no approval within $(wait_label "$TIMEOUT"); the approval link has stopped working. Run connect again for a new link." >&2; exit 1 ;;
     listener:*) echo "kontext-connect: $result" >&2; echo "kontext-connect: could not listen on 127.0.0.1:$CALLBACK_PORT (port in use?)" >&2; exit 1 ;;
+    replaced) echo "kontext-connect: a newer Kontext sign-in replaced this one; run connect again." >&2; exit 1 ;;
     error:*) echo "kontext-connect: ${result#error: }" >&2; exit 1 ;;
     *) echo "kontext-connect: $result" >&2; exit 1 ;;
   esac

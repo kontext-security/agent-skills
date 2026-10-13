@@ -20,4 +20,4 @@ Tell your agent: **"Connect to Kontext and show me my policies."** Approve once 
 
 For CI or different access per agent, create a service account under **Settings → Agent access → Service accounts** and export `KONTEXT_CLIENT_ID` / `KONTEXT_CLIENT_SECRET`.
 
-Skill version: **0.9.0**.
+Skill version: **0.9.1**.

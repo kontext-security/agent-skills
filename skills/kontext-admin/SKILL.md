@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.9.0"
+  version: "0.9.1"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -231,7 +231,8 @@ enforcement, in this prompt or a later one.
    Never propose from demo data.
 3. **Read what agents actually do** over the last 30 days: `GET /traces/stats?period=30d`,
    `GET /decisions` with `from`/`to` (follow `nextCursor`; each item names
-   `provider`, `toolName`, `operation`, `decisionResult`, `installationId`), and
+   `provider`, `toolName`, `operation`, `commandSummary`, `decisionResult`,
+   `installationId`), and
    `GET /enterprise/dashboard/risk/summary` plus `…/risk/findings` for the same
    window. Combine them: which tools and resources are used, by which endpoints,
    what was flagged and how severely, and what was already blocked. First
@@ -246,6 +247,13 @@ enforcement, in this prompt or a later one.
      commands that print or copy them;
    - tools, providers or Macs seen only a few times, sudden bursts, and
      activity at unusual hours for that Mac.
+   `operation` is filled in only for `git`, `gh` and delete commands, so it is
+   empty for most shell calls; that is normal, not a gap in what Kontext sees.
+   Read shell calls from `commandSummary` (the command, secrets redacted on the
+   Mac, cut short) and `pathClass` (for example `env_file`) instead. Both are
+   sent in every capture mode. On a server that does not return them yet, say
+   once that you could not check commands for secrets or outbound hosts,
+   rather than counting calls.
 4. **List the endpoints:** `GET /organizations/current/directory/reconciliation`
    returns every managed endpoint (Mac) with its `installationId`, `deviceLabel`,
    `userEmail` and `lastSeenAt`. If it answers 403, use the distinct
@@ -259,6 +267,10 @@ enforcement, in this prompt or a later one.
    presets need a companion guard (for example a block-unrecognized operations
    policy); the server adds it with the preset, so do not add that companion
    separately. Step 7 covers the one case where you add a guard yourself.
+   The user never asked for the guard, so never present it as a policy of its
+   own: describe it inside the preset, for example "Require human merge, which
+   also blocks GitHub calls Kontext cannot identify", and say what its replay
+   would block in the same line.
 6. **Write custom raw policies for what no preset covers.** Look for it before
    concluding the presets are enough: logs usually show something specific to
    this workspace, such as a particular MCP tool, a provider no preset names, or
