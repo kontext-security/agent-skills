@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.9.0"
+  version: "0.9.1"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -246,6 +246,11 @@ enforcement, in this prompt or a later one.
      commands that print or copy them;
    - tools, providers or Macs seen only a few times, sudden bursts, and
      activity at unusual hours for that Mac.
+   `operation` is filled in only for `git`, `gh` and delete commands, so it is
+   empty for most shell calls; that is normal, not a gap in what Kontext sees.
+   How much of a command you can read depends on `payloadCaptureMode` from
+   `GET /policy/settings`. When it keeps you from checking calls for secrets or
+   outbound hosts, say so once and name the mode, rather than counting calls.
 4. **List the endpoints:** `GET /organizations/current/directory/reconciliation`
    returns every managed endpoint (Mac) with its `installationId`, `deviceLabel`,
    `userEmail` and `lastSeenAt`. If it answers 403, use the distinct
@@ -259,6 +264,10 @@ enforcement, in this prompt or a later one.
    presets need a companion guard (for example a block-unrecognized operations
    policy); the server adds it with the preset, so do not add that companion
    separately. Step 7 covers the one case where you add a guard yourself.
+   The user never asked for the guard, so never present it as a policy of its
+   own: describe it inside the preset, for example "Require human merge, which
+   also blocks GitHub calls Kontext cannot identify", and say what its replay
+   would block in the same line.
 6. **Write custom raw policies for what no preset covers.** Look for it before
    concluding the presets are enough: logs usually show something specific to
    this workspace, such as a particular MCP tool, a provider no preset names, or

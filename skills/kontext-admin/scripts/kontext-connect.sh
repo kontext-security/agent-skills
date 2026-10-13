@@ -20,7 +20,7 @@ unset KONTEXT_CLIENT_ID KONTEXT_CLIENT_SECRET
 source "$(dirname "$0")/kontext-context.sh"
 
 CLIENT_ID="$IDENTITY"
-UA="kontext-skill/0.9.0"
+UA="kontext-skill/0.9.1"
 CALLBACK_PORT=8976
 FLOW="${KONTEXT_CONNECT_FLOW:-pkce}"
 # Approval often goes through a relayed URL or a second device, so wait long.
@@ -105,6 +105,21 @@ stop_worker() { # let a worker that is exchanging a code finish, then stop it
   for i in $(seq 75); do worker_alive && [ ! -f "$PENDING/result" ] || break; sleep 0.2; done
   ! worker_alive || kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
   for i in $(seq 25); do worker_alive || break; sleep 0.2; done
+}
+
+release_other_approvals() { # one loopback port: a new sign-in replaces any other one still waiting
+  local own=$PENDING p i
+  for p in "$CACHE_DIR"/token-*.pkce; do
+    [ -d "$p" ] && [ "$p" != "$own" ] || continue
+    PENDING=$p
+    if worker_alive && [ ! -f "$PENDING/result" ]; then
+      kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
+      for i in $(seq 25); do worker_alive || break; sleep 0.2; done
+      rm -rf "$PENDING"
+      echo "kontext-connect: replaced an earlier sign-in that was still waiting; its link no longer works." >&2
+    fi
+  done
+  PENDING=$own
 }
 
 token_valid() {
@@ -223,6 +238,7 @@ connect_pkce() {
   fi
   if ! worker_alive && [ ! -f "$PENDING/result" ]; then
     [ -z "$reuse" ] || restarted=1
+    release_other_approvals
     start_worker
   fi
   local result own_state auth_url remaining=$TIMEOUT

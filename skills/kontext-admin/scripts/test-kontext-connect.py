@@ -32,7 +32,7 @@ class FakeAuthServer(BaseHTTPRequestHandler):
     exchanges = []
 
     def do_POST(self):
-        assert self.headers.get("User-Agent") == "kontext-skill/0.9.0"
+        assert self.headers.get("User-Agent") == "kontext-skill/0.9.1"
         form = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
         code, verifier = form["code"][0], form["code_verifier"][0]
         assert form["redirect_uri"] == [CALLBACK] and form["client_id"] == ["kontext-cli"]
@@ -278,6 +278,22 @@ with tempfile.TemporaryDirectory() as directory:
             assert "port in use?" in finished(process, log, 1)
         reset()
 
+        # 7b. An approval left waiting for another API base (a different cache
+        # entry) holds the port: a new sign-in replaces it instead of failing.
+        other, other_log = start({"KONTEXT_API_BASE": "http://127.0.0.1:9"})
+        old_url = auth_url(wait_for(other, other_log, "Waiting for approval"))
+        os.killpg(other.pid, signal.SIGKILL)
+        other.wait()
+        assert not port_free(), "the earlier approval's listener should still be waiting"
+        process, log = start()
+        output = wait_for(process, log, "Waiting for approval (up to 15 minutes)")
+        assert "replaced an earlier sign-in" in output and auth_url(output) != old_url, output
+        assert get(approve(old_url, "stale")) == 400
+        assert get(approve(auth_url(output), "replaced")) == 200
+        assert "Connected." in finished(process, log)
+        assert not any(p.suffix == ".pkce" for p in token_file.parent.iterdir())
+        reset()
+
         # 8. Custom and invalid timeouts.
         process, log = start({"KONTEXT_CONNECT_TIMEOUT": "1"})
         output = finished(process, log, 1)
@@ -286,7 +302,7 @@ with tempfile.TemporaryDirectory() as directory:
         result = subprocess.run(["bash", str(script)], env={**env, "KONTEXT_CONNECT_TIMEOUT": "soon"}, capture_output=True, text=True, timeout=10)
         assert result.returncode == 1 and "must be a positive number of seconds" in result.stderr, result.stderr
         print("listener survives a killed command; reruns reuse the approval and its verifier; parallel runs and parallel restarts share one listener; unwritable cache fails; expired approval renews; stale PID and lock are safe; "
-              "INT/TERM/HUP exit codes; denial, busy port, 15 minute default and custom timeout")
+              "INT/TERM/HUP exit codes; denial, busy port, stale approval for another base replaced, 15 minute default and custom timeout")
     finally:
         for process in started:
             try:
