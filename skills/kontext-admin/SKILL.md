@@ -231,7 +231,8 @@ enforcement, in this prompt or a later one.
    Never propose from demo data.
 3. **Read what agents actually do** over the last 30 days: `GET /traces/stats?period=30d`,
    `GET /decisions` with `from`/`to` (follow `nextCursor`; each item names
-   `provider`, `toolName`, `operation`, `decisionResult`, `installationId`), and
+   `provider`, `toolName`, `operation`, `commandSummary`, `decisionResult`,
+   `installationId`), and
    `GET /enterprise/dashboard/risk/summary` plus `…/risk/findings` for the same
    window. Combine them: which tools and resources are used, by which endpoints,
    what was flagged and how severely, and what was already blocked. First
@@ -248,9 +249,11 @@ enforcement, in this prompt or a later one.
      activity at unusual hours for that Mac.
    `operation` is filled in only for `git`, `gh` and delete commands, so it is
    empty for most shell calls; that is normal, not a gap in what Kontext sees.
-   How much of a command you can read depends on `payloadCaptureMode` from
-   `GET /policy/settings`. When it keeps you from checking calls for secrets or
-   outbound hosts, say so once and name the mode, rather than counting calls.
+   Read shell calls from `commandSummary` (the command, secrets redacted on the
+   Mac, cut short) and `pathClass` (for example `env_file`) instead. Both are
+   sent in every capture mode. On a server that does not return them yet, say
+   once that you could not check commands for secrets or outbound hosts,
+   rather than counting calls.
 4. **List the endpoints:** `GET /organizations/current/directory/reconciliation`
    returns every managed endpoint (Mac) with its `installationId`, `deviceLabel`,
    `userEmail` and `lastSeenAt`. If it answers 403, use the distinct
