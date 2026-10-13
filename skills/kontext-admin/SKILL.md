@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.9.1"
+  version: "0.9.2"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -160,6 +160,10 @@ recorded calls would have done under the candidate.
    keeps enforcement paused. Enforcing a preset also enforces its observing
    companion guard; the response's `changedPolicyIds` lists both.
    Stop with `{"action":"stop","policyId":"..."}` to move it back to observing.
+   Stopping a preset also stops the guard it brought, unless another enforced
+   preset with the same scope still needs it; `changedPolicyIds` lists both.
+   When nothing blocks after a stop or an enforced delete, the workspace
+   observes again: the response's `rolloutMode` is `observe`.
    Remove with `{"action":"delete","policyId":"...","where":"observing"}` or
    `"where":"enforced"`; deleting an enforced policy also removes its observing copies.
 
@@ -388,7 +392,11 @@ them: show it, ask one question, and enforce only after a clear yes.
    such as "Enforce these 3 policies now?" When some are thin, offer to enforce
    only the others. A preset and the companion guard the server enforces with
    it, or a custom policy and the guard it relies on, are one choice: list them
-   together and never offer one without the other. Then stop and wait. A yes the user gave earlier in the
+   together and never offer one without the other. Every write preset for
+   GitHub, Jira, Confluence or HubSpot brings that provider's block-unrecognized
+   guard, not only the preset it was added with, so name the guard with each
+   of them, for example "Require human merge, which also blocks GitHub calls
+   Kontext cannot identify". Then stop and wait. A yes the user gave earlier in the
    conversation counts only if they had seen this evidence.
 6. **Enforce what the user approved.** All of the observing version: promote it
    (step 4 of [Change Cedar policy safely](#change-cedar-policy-safely)). Only
@@ -463,14 +471,17 @@ Never guess a rollback target from a version's number.
    When there is no baseline and the enforced version differs from
    `default-permit` by more than added `forbid` policies (a restricted or
    removed `permit`), neither `stop` nor rollback undoes it: the workspace
-   keeps denying calls outside the narrowed permit. Say so, and tell the user
-   to switch the workspace back to observing in the dashboard.
+   keeps denying calls outside the narrowed permit. Say so and stop: no
+   action or dashboard control restores it yet.
    Present the policies it would remove and restore (step 5 of
    [Change Cedar policy safely](#change-cedar-policy-safely)), and say that the
    rollback leaves the observing version as it is: read it and say whether the
    undone changes still observe there. Then ask once and wait.
 4. **Apply and confirm:** after the yes, apply it, re-read the deployment, say
    what no longer blocks, and that each Mac applies it at its next check-in.
+   When nothing blocks any more, say that the workspace is observing again;
+   if `rolloutMode` is still `enforce` with nothing enforced (an older
+   server), say that nothing blocks even though the mode reads enforce.
 
 ### Verify policy behavior through decisions
 
