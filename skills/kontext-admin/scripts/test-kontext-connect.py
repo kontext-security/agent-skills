@@ -303,6 +303,7 @@ with tempfile.TemporaryDirectory() as directory:
             lstart = subprocess.run(["ps", "-o", "lstart=", "-p", str(exchanging.pid)], capture_output=True, text=True).stdout
             (other_pending / "pid").write_text(f"{exchanging.pid}\n")
             (other_pending / "pid_start").write_text(lstart)
+            (other_pending / "exchanging").write_text("")
             process, log = start()
             output = wait_for(process, log, "Waiting for approval (up to 15 minutes)")
             assert "replaced" not in output and exchanging.poll() is None and other_pending.exists(), output

@@ -108,15 +108,13 @@ stop_worker() { # let a worker that is exchanging a code finish, then stop it
   for i in $(seq 25); do worker_alive || break; sleep 0.2; done
 }
 
-port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$CALLBACK_PORT") 2>/dev/null; }
-
 release_other_approvals() { # one loopback port: a new sign-in replaces any other one still waiting
   local own=$PENDING p i
   for p in "$CACHE_DIR"/token-*.pkce; do
     [ -d "$p" ] && [ "$p" != "$own" ] || continue
     PENDING=$p
     # A worker whose listener has closed is exchanging an approved code: let it finish.
-    if worker_alive && [ ! -f "$PENDING/result" ] && port_busy; then
+    if worker_alive && [ ! -f "$PENDING/result" ] && [ ! -f "$PENDING/exchanging" ]; then
       kill -TERM -- "-$(pending_get pid)" 2>/dev/null || true
       for i in $(seq 25); do worker_alive || break; sleep 0.2; done
       rm -rf "$PENDING"
@@ -166,6 +164,7 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
     srv.listen(port, "127.0.0.1", () => fs.writeFileSync(ready, ""));
     setTimeout(() => { console.log(JSON.stringify({ error: "timeout" })); process.exit(1); }, seconds * 1000);
   ' "$CALLBACK_PORT" "$remaining" "$state" "$PENDING/ready") || true
+  : > "$PENDING/exchanging" # listener closed: a new sign-in must not stop this worker now
   err=$(printf '%s' "$cb" | jq -r '.error // empty' 2>/dev/null || echo listener)
   [ "$err" = "timeout" ] && finish timeout
   [ -n "$err" ] && finish "$err: $(printf '%s' "$cb" | jq -r '.error_description // empty' 2>/dev/null)"
@@ -189,7 +188,7 @@ pkce_worker() { # runs detached; writes exactly one line to $PENDING/result
 
 start_worker() { # detached (setsid via node), so stopping this command keeps it
   local i
-  rm -f "$PENDING/pid" "$PENDING/pid_start" "$PENDING/ready"
+  rm -f "$PENDING/pid" "$PENDING/pid_start" "$PENDING/ready" "$PENDING/exchanging"
   KONTEXT_PKCE_WORKER=1 node -e '
     require("child_process").spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: "ignore" }).unref();
   ' bash "$SELF"
