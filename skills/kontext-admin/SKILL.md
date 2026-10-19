@@ -196,9 +196,12 @@ recorded calls would have done under the candidate.
 
 GitHub, Jira, Confluence, HubSpot and Databricks presets see only the
 operations Kontext can classify. Operations it cannot classify (an
-uncatalogued MCP tool, a non-literal `gh api` path, a request body loaded from
-a file, a `databricks` command or REST route Kontext has not catalogued) fail
-open: no preset blocks them. Each of these providers has a guard preset that
+uncatalogued MCP tool, a non-literal `gh api` path, a `databricks` command or
+REST route Kontext has not catalogued) fail open: no preset blocks them. A
+known operation whose body Kontext cannot read (for example SQL loaded from a
+file through `databricks api`) is different: it keeps its catalogued tier, so
+tier presets such as read only still block it, but checks that read the body
+(SQL deletes, grants, `secret()`) cannot, and the guard does not help there. Each of these providers has a guard preset that
 blocks them: `block-unrecognized-github-operations`,
 `block-unrecognized-atlassian-operations` (Jira and Confluence),
 `block-unrecognized-hubspot-operations` and
@@ -232,17 +235,25 @@ never adds or enforces one, and no validation warning is a reason to add one.
 Databricks calls are classified from the Databricks MCP servers, the
 `databricks` CLI (including `databricks api`) and `curl` to Databricks hosts.
 Each call carries one product and a tier (`read`, `write`, `delete`,
-`admin`). The products:
+`admin`). The product belongs to the operation, not to a whole resource
+family, so the table below is the usual case, not a rule:
 
 | Product | What it covers |
 |---|---|
 | `sql` | running SQL: `execute_sql`, the SQL Statement Execution API, `databricks experimental aitools` |
 | `data` | Unity Catalog catalogs, schemas, tables, volumes, connections, external locations, clean rooms |
-| `compute` | clusters, instance pools, libraries, cluster policies, SQL warehouses |
+| `compute` | clusters, instance pools, cluster policies, SQL warehouses |
 | `workloads` | jobs, pipelines, bundles and apps as definitions (create, change, delete) |
 | `execution` | running code and deploying: job and pipeline runs, `bundle deploy`/`run`, `apps deploy`, command execution, `run_code` |
 | `workspace` | notebooks and files, repos, queries, dashboards, alerts |
 | `ai` | Genie, AI Search, model serving, ML experiments and models, agents |
+
+Exceptions worth knowing: installing libraries is `execution`; DBFS deletes
+and Files API uploads are `data`; creating a Unity Catalog connection is
+`secrets`; creating a storage credential is `data` at `admin`; the MCP
+`uc-function` tool is `execution` at `write`. A product rule can therefore
+miss calls you expect it to catch: replay it (step 10 of the propose
+workflow) and check that the calls that motivated it are caught.
 | `secrets` | secrets, tokens, credentials, service principal secrets; SQL that calls `secret()` counts here, not as `sql` |
 | `admin` | users, groups, permissions and grants, workspace and account settings, billing |
 
@@ -257,7 +268,7 @@ The seven presets (read each one's `coverage` and `knownGaps` from
 | `protect-databricks-administration` | permission, ownership, grant, settings, user and group changes |
 | `protect-databricks-secrets` | product `secrets` at any tier, reads included |
 | `protect-databricks-runs-and-deploys` | product `execution` at write and above |
-| `block-unrecognized-databricks-operations` | the opt-in guard above, never offered by default |
+| `block-unrecognized-databricks-operations` | the opt-in guard above, never added or enforced by default |
 
 None of them sees the Databricks SDKs, Terraform, dbt, notebooks, or an MCP
 server Kontext cannot identify as Databricks; say so when it matters. For a
@@ -273,11 +284,19 @@ lists, for each provider preset in the enforced or observing version, how
 many endpoints it targets (`targetedEndpoints`), the endpoints below its
 `minCliVersion` (`belowMinimum`) and those that have not reported a version
 (`unknownVersion`), each with `deviceLabel`, `userEmail` and `cliVersion`.
-`minCliVersion` null means no released CLI enforces the preset yet, so every
-endpoint is listed. It only informs: the preset still applies everywhere and
-nothing is gated. After adding or before enforcing a provider preset, read it
-and tell the user which Macs need a CLI update before the preset protects
-them. A 404 means the server does not offer it yet: say you could not check.
+It only informs: the preset still applies everywhere and nothing is gated.
+After adding or before enforcing a provider preset, read it and report three
+cases apart:
+- `belowMinimum`: these Macs need a CLI update to `minCliVersion` or later
+  before the preset protects them.
+- `unknownVersion`: these Macs reported no release version (or a `dev`
+  build), so whether the preset reaches them is unverified, not known to fail.
+- `minCliVersion` null: no CLI release enforcing the preset is recorded yet,
+  so there is no update to point to; say the preset does not reach these
+  Macs until one ships.
+A preset in the version that the response does not list was not checked; say
+so rather than implying full coverage. A 404 means the server does not offer
+the check: say you could not check.
 
 **Always pass `If-Match` as the helper's fourth argument for actions.** A missing
 header returns 428. On 412, re-read the deployment, reconcile the change, and
