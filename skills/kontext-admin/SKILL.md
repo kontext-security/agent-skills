@@ -129,6 +129,9 @@ recorded calls would have done under the candidate.
    To add copies for several scopes in one transaction, use `scopes` instead of
    the top-level scope fields, for example `[{"agentId":"openai-codex"}]`.
    An add saves only the policy you name; the server adds no guard with it.
+   If `changedPolicyIds` in the response lists more than what you added, the
+   server predates guards being opt-in: tell the user, and do not enforce
+   until they decide about the extra guard.
    Add a block-unrecognized guard only when the user chose it (see
    [Unrecognized-operation guards are opt-in](#unrecognized-operation-guards-are-opt-in)).
    A 409 `policy_already_present` means a copy is already in the set and
@@ -197,16 +200,18 @@ recorded calls would have done under the candidate.
 GitHub, Jira, Confluence, HubSpot and Databricks presets see only the
 operations Kontext can classify. Operations it cannot classify (an
 uncatalogued MCP tool, a non-literal `gh api` path, a `databricks` command or
-REST route Kontext has not catalogued) fail open: no preset blocks them. A
-known operation whose body Kontext cannot read (for example SQL loaded from a
-file through `databricks api`) is different: it keeps its catalogued tier, so
-tier presets such as read only still block it, but checks that read the body
-(SQL deletes, grants, `secret()`) cannot, and the guard does not help there. Each of these providers has a guard preset that
-blocks them: `block-unrecognized-github-operations`,
+REST route Kontext has not catalogued) fail open: ordinary presets do not
+block them. Each provider has a guard preset that does:
+`block-unrecognized-github-operations`,
 `block-unrecognized-atlassian-operations` (Jira and Confluence),
 `block-unrecognized-hubspot-operations` and
 `block-unrecognized-databricks-operations`. Adding or enforcing another preset
 never adds or enforces one, and no validation warning is a reason to add one.
+A known operation whose body Kontext cannot read (for example SQL loaded from
+a file through `databricks api`) is a different case: it keeps its catalogued
+tier, so tier presets such as read only still block it, but checks that read
+the body (SQL deletes, grants, `secret()`) cannot, and the guard does not help
+there.
 
 - **It is the admin's choice.** Offer the guard as its own option; never add
   or enforce it on your own. Say the trade-off with it: it closes the gap, but
@@ -247,6 +252,8 @@ family, so the table below is the usual case, not a rule:
 | `execution` | running code and deploying: job and pipeline runs, `bundle deploy`/`run`, `apps deploy`, command execution, `run_code` |
 | `workspace` | notebooks and files, repos, queries, dashboards, alerts |
 | `ai` | Genie, AI Search, model serving, ML experiments and models, agents |
+| `secrets` | secrets, tokens, credentials, service principal secrets; SQL that calls `secret()` counts here, not as `sql` |
+| `admin` | users, groups, permissions and grants, workspace and account settings, billing |
 
 Exceptions worth knowing: installing libraries is `execution`; DBFS deletes
 and Files API uploads are `data`; creating a Unity Catalog connection is
@@ -254,11 +261,10 @@ and Files API uploads are `data`; creating a Unity Catalog connection is
 `uc-function` tool is `execution` at `write`. A product rule can therefore
 miss calls you expect it to catch: replay it (step 10 of the propose
 workflow) and check that the calls that motivated it are caught.
-| `secrets` | secrets, tokens, credentials, service principal secrets; SQL that calls `secret()` counts here, not as `sql` |
-| `admin` | users, groups, permissions and grants, workspace and account settings, billing |
 
 The seven presets (read each one's `coverage` and `knownGaps` from
-`/policy/rule-templates` before you explain it):
+`/policy/rule-templates` before you explain it, and offer one only when that
+catalog lists it):
 
 | Preset | Blocks |
 |---|---|
@@ -491,8 +497,8 @@ them: show it, ask one question, and enforce only after a clear yes.
    `/policy/blocked?days=7`. Per policy: how many recorded calls it would have
    blocked, by which agents and Macs, with one or two examples, and whether any
    of those look like normal work it would now break. For provider presets,
-   also the Macs `/policy/preset-reach` lists, which keep allowing those calls
-   after enforcement until their CLI is updated.
+   also what `/policy/preset-reach` reports, kept in its three cases (see
+   [Endpoints a preset does not reach yet](#endpoints-a-preset-does-not-reach-yet)).
 4. **Judge the evidence and say it in one line per policy:** replay checks
    the rule against recorded calls, so its age does not matter. Enough when
    the replay window holds several days of normal work and the rule matched
