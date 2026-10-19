@@ -24,8 +24,8 @@ Connect once: permissions live under **Settings → Agent access** and changes a
 The dashboard prompt is **"Connect to Kontext and show me my policies."** Complete it with reads only:
 
 1. Run `scripts/kontext-api.sh GET /api/v1/policy/deployment`, completing browser approval if needed.
-2. Read `GET /api/v1/policy/versions/{id}` for each distinct non-null policy version named in the deployment.
-3. Summarize the policies and whether they are enforced, observing, or disabled. If there is no version, say that no policies are configured. Stop here. Connection does not require onboarding, provisioning, or any write request.
+2. Read `GET /api/v1/policy/versions/{id}` for each distinct non-null policy version named in the deployment, and `GET /api/v1/policy/versions` for `guardsToConfirm`.
+3. Summarize the policies and whether they are enforced, observing, or disabled, and name any guard in `guardsToConfirm` (see [Unrecognized-operation guards are opt-in](#unrecognized-operation-guards-are-opt-in)). If there is no version, say that no policies are configured. Stop here. Connection does not require onboarding, provisioning, or any write request.
 
 You can also connect explicitly first:
 
@@ -205,10 +205,15 @@ never adds or enforces one, and no validation warning is a reason to add one.
 
 - **It is the admin's choice.** Offer the guard as its own option; never add
   or enforce it on your own. Say the trade-off with it: it closes the gap, but
-  it also blocks new tools and commands of that provider until Kontext
-  catalogues them, so an agent's new MCP tool or CLI command stops working
-  until a Kontext update recognises it. Add it only after the user picks the
-  guard itself; then it observes and is enforced like any other policy.
+  it blocks more than unknown operations. It blocks every MCP call of that
+  provider that arrives as `<provider>-mcp/unrecognized`, including tools
+  Kontext classifies by access tier without naming them (for example
+  read-only GitHub tools), shell commands for that provider it cannot fully
+  parse, and new tools and commands until Kontext catalogues them, so an
+  agent's new MCP tool or CLI command stops working until a Kontext update
+  names it. Add it only after the user picks the guard itself; then it
+  observes and is enforced like any other policy, and its replay shows
+  exactly what it would block.
 - **Guards from before this change.** A write preset used to add and enforce
   its guard automatically. Those guards stay enforced. `GET /policy/versions`
   returns `guardsToConfirm`: the guards still enforced that way that nobody
@@ -327,9 +332,11 @@ enforcement, in this prompt or a later one.
    observe-only workspace, `policyVersionId`), else the enforced version, and
    only when neither exists the catalog's `default-permit` cedar. Fix and validate again
    until `valid` is true. Fix `unsupported_tool_id` too: the policy would never
-   match. Other warnings are informational. `forbid_may_fail_open` says the
-   rule reads `context.tool`, so it does not match operations Kontext cannot
-   classify; that is the default, not a defect. Never add a guard because of
+   match. Other warnings are informational. A `forbid_may_fail_open` warning
+   says the rule reads `context.tool`, so it does not match operations Kontext
+   cannot classify; that is the default, not a defect. (The same code as an
+   error, for a rule reading `context.shell`, makes `valid` false: fix the rule
+   as the error says.) Never add a guard because of
    it: tell the user in the policy's line in step 8 and leave the guard to the
    opt-in choice there. Drop a policy you cannot make valid and say why.
 8. **Show what you found and ask whether it was intended.** Start with one line
@@ -343,9 +350,10 @@ enforcement, in this prompt or a later one.
    When the findings cover GitHub, Jira, Confluence or HubSpot and that
    provider's block-unrecognized guard is not in the set, add one optional
    line per provider below the list, not numbered with the findings: block
-   that provider's operations Kontext cannot recognise, how many such calls
-   the logs show (`<provider>-mcp/unrecognized`), and the trade-off that it
-   also blocks new tools and commands until Kontext catalogues them. "Add all"
+   that provider's operations Kontext cannot recognise, how many logged calls
+   it would have blocked at least (every `<provider>-mcp/unrecognized` call,
+   some of them ordinary reads), and the trade-off from
+   [Unrecognized-operation guards are opt-in](#unrecognized-operation-guards-are-opt-in). "Add all"
    does not include it; add it only when the user names it.
    Mention that adding a policy only observes, so nothing blocks yet. Then stop
    and wait for the answer. If nothing stands out, say so, name the one or two
@@ -418,10 +426,12 @@ them: show it, ask one question, and enforce only after a clear yes.
    applies it at its next check-in; "Roll back" undoes it), then one question
    such as "Enforce these 3 policies now?" When some are thin, offer to enforce
    only the others. Each policy is its own choice: enforcing a preset enforces
-   no guard with it. A block-unrecognized guard is in the list only when it is
-   observing because the user opted in; name it as its own item with its
-   trade-off (it also blocks new tools and commands of that provider until
-   Kontext catalogues them). Then stop and wait. A yes the user gave earlier in the
+   no guard with it. Offer a block-unrecognized guard only when the user opted
+   in to it; name it as its own item with its trade-off and its replay. A guard
+   still observing from before guards were opt-in, which nobody chose, is not
+   offered for enforcing unless the user asks: leave it observing, and since
+   promoting the whole version would enforce it, enforce the approved policies
+   one by one instead. Then stop and wait. A yes the user gave earlier in the
    conversation counts only if they had seen this evidence.
 6. **Enforce what the user approved.** All of the observing version: promote it
    (step 4 of [Change Cedar policy safely](#change-cedar-policy-safely)). Only
