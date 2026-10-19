@@ -261,7 +261,10 @@ family, so the table below is the usual case, not a rule:
 Exceptions worth knowing: installing libraries is `execution`; DBFS deletes
 and Files API uploads are `data`; creating a Unity Catalog connection is
 `secrets`; creating a storage credential is `data` at `admin`; the MCP
-`uc-function` tool is `execution` at `write`. A product rule can therefore
+`uc-function` tool is `execution` at `write`; creating a Unity Catalog
+credential is `data` at `admin` and an account credential `admin`; starting a
+Genie conversation through the CLI is `sql` at `write`, while the MCP Genie
+tools are `ai`. A product rule can therefore
 miss calls you expect it to catch: replay it (step 10 of the propose
 workflow) and check that the calls that motivated it are caught.
 
