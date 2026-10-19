@@ -207,11 +207,12 @@ block them. Each provider has a guard preset that does:
 `block-unrecognized-hubspot-operations` and
 `block-unrecognized-databricks-operations`. Adding or enforcing another preset
 never adds or enforces one, and no validation warning is a reason to add one.
-A known operation whose body Kontext cannot read (for example SQL loaded from
-a file through `databricks api`) is a different case: it keeps its catalogued
-tier, so tier presets such as read only still block it, but checks that read
-the body (SQL deletes, grants, `secret()`) cannot, and the guard does not help
-there.
+A known operation whose body comes from a file or stdin (for example SQL
+loaded from a file through `databricks api`) is a different case: it keeps its
+catalogued tier, so tier presets such as read only still block it, but checks
+that read the body (SQL deletes, grants, `secret()`) cannot, and the guard does
+not help there. A body or SQL computed in the shell (`"$SQL"`, `"$BODY"`)
+counts as unrecognized, so the guard does block that.
 
 - **It is the admin's choice.** Offer the guard as its own option; never add
   or enforce it on your own. Say the trade-off with it: it closes the gap, but
@@ -279,8 +280,10 @@ catalog lists it):
 None of them sees the Databricks SDKs, Terraform, dbt, notebooks, or an MCP
 server Kontext cannot identify as Databricks; say so when it matters. For a
 rule no preset covers, such as one product, model it on
-`protect-databricks-runs-and-deploys`'s raw `cedar` (it matches one product
-and a tier on both the MCP and the shell side) and change the product.
+a preset's raw `cedar` that matches on both the MCP and the shell side:
+`protect-databricks-runs-and-deploys` for one product at write and above,
+`protect-databricks-secrets` for one product at every tier, reads included.
+Change the product, and choose the tiers on purpose.
 
 #### Endpoints a preset does not reach yet
 
@@ -300,7 +303,9 @@ cases apart:
 - `minCliVersion` null: no CLI release enforcing the preset is recorded yet,
   so there is no update to point to; say the preset does not reach these
   Macs until one ships.
-A preset in the version that the response does not list was not checked; say
+Top-level `presets` merges the enforced and observing versions; when you
+review one version, use its entry in `versions[].presets` instead. A paused
+set returns no entries. A preset in the version that the response does not list was not checked; say
 so rather than implying full coverage. A 404 means the server does not offer
 the check: say you could not check.
 
