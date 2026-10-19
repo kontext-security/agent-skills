@@ -207,8 +207,10 @@ block them. Each provider has a guard preset that does:
 `block-unrecognized-hubspot-operations` and
 `block-unrecognized-databricks-operations`. Adding or enforcing another preset
 never adds or enforces one, and no validation warning is a reason to add one.
-A known operation whose body comes from a file or stdin (for example SQL
-loaded from a file through `databricks api`) is a different case: it keeps its
+For Databricks, a known operation whose body comes from a file or stdin (for
+example SQL loaded from a file through `databricks api`) is a different case
+(for the other providers such a call counts as unrecognized, for example
+`gh api … --input body.json`, so their guard does block it): it keeps its
 catalogued tier, so tier presets such as read only still block it, but checks
 that read the body (SQL deletes, grants, `secret()`) cannot, and the guard does
 not help there. A body or SQL computed in the shell (`"$SQL"`, `"$BODY"`)
@@ -220,9 +222,9 @@ counts as unrecognized, so the guard does block that.
   provider that arrives as `<provider>-mcp/unrecognized`, including tools
   Kontext classifies by access tier without naming them (for example
   read-only GitHub tools), shell commands for that provider it cannot fully
-  parse, and new tools and commands until Kontext catalogues them, so an
-  agent's new MCP tool or CLI command stops working until a Kontext update
-  names it. Add it only after the user picks the guard itself; then it
+  parse, and new tools and commands Kontext has not catalogued, so an
+  agent's new MCP tool or CLI command can stop working; a Kontext update may
+  not unblock it, because some catalogued tools still arrive unnamed. Add it only after the user picks the guard itself; then it
   observes and is enforced like any other policy, and its replay shows the
   recorded calls it would newly block (only replayable ones).
 - **Guards from before this change.** A write preset used to add and enforce
