@@ -212,8 +212,8 @@ never adds or enforces one, and no validation warning is a reason to add one.
   parse, and new tools and commands until Kontext catalogues them, so an
   agent's new MCP tool or CLI command stops working until a Kontext update
   names it. Add it only after the user picks the guard itself; then it
-  observes and is enforced like any other policy, and its replay shows
-  exactly what it would block.
+  observes and is enforced like any other policy, and its replay shows the
+  recorded calls it would newly block (only replayable ones).
 - **Guards from before this change.** A write preset used to add and enforce
   its guard automatically. Those guards stay enforced. `GET /policy/versions`
   returns `guardsToConfirm`: the guards still enforced that way that nobody
@@ -431,7 +431,12 @@ them: show it, ask one question, and enforce only after a clear yes.
    still observing from before guards were opt-in, which nobody chose, is not
    offered for enforcing unless the user asks: leave it observing, and since
    promoting the whole version would enforce it, enforce the approved policies
-   one by one instead. Then stop and wait. A yes the user gave earlier in the
+   one by one instead. When the version must go whole (step 6: it modifies or
+   removes a policy or changes a `permit`), name the guard as part of it with
+   its trade-off and let the user choose: the whole version with the guard,
+   or delete the guard from observing first (`"where":"observing"`), replay
+   again, and then the whole version. Never promote a version with that guard
+   in it unless the user chose that. Then stop and wait. A yes the user gave earlier in the
    conversation counts only if they had seen this evidence.
 6. **Enforce what the user approved.** All of the observing version: promote it
    (step 4 of [Change Cedar policy safely](#change-cedar-policy-safely)). Only
