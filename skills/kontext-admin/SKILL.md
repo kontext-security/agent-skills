@@ -61,7 +61,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Policy state and history | `GET /policy/deployment` (both slots + ETag), `GET /policy`, `GET /policy/versions`, `GET /policy/versions/{id}`, `GET /policy/rule-templates` | `management:policy:read` |
 | Policy actions | `POST /policy/actions`, `POST /policy/validations` | `management:policy:write` |
 | Policy-set versions | `POST /policy/deployment/promote` (enforce the reviewed observing version), `POST /policy/deployment/rollback` (enforce an earlier version again) | `management:policy:write` |
-| Policy evidence | `POST /policy/replay`, `GET /policy/blocked?days=7` | `management:policy:read` |
+| Policy evidence | `POST /policy/replay`, `GET /policy/blocked?days=7`, `GET /policy/preset-reach` (endpoints whose CLI is too old for a preset) | `management:policy:read` |
 | Decisions | `GET /decisions` (filters: provider, decisionResult, decisionCategory, reasonCode, riskLevel, installationId, sessionId, from/to; cursor pagination), `GET /decisions/{id}` | `management:logs:read` |
 | Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
 | Risks | `GET /enterprise/dashboard/risk/summary` (from/to), `GET /enterprise/dashboard/risk/findings` (from/to, severity, riskCategory, agent, principal, decision; cursor pagination), `GET /enterprise/dashboard/execution/failures` (from/to, toolName) | `management:logs:read` |
@@ -194,13 +194,15 @@ recorded calls would have done under the candidate.
 
 #### Unrecognized-operation guards are opt-in
 
-GitHub, Jira, Confluence and HubSpot presets see only the operations Kontext
-can classify. Operations it cannot classify (an uncatalogued MCP tool, a
-non-literal `gh api` path, a request body loaded from a file) fail open: no
-preset blocks them. Each of these providers has a guard preset that blocks
-them: `block-unrecognized-github-operations`,
-`block-unrecognized-atlassian-operations` (Jira and Confluence) and
-`block-unrecognized-hubspot-operations`. Adding or enforcing another preset
+GitHub, Jira, Confluence, HubSpot and Databricks presets see only the
+operations Kontext can classify. Operations it cannot classify (an
+uncatalogued MCP tool, a non-literal `gh api` path, a request body loaded from
+a file, a `databricks` command or REST route Kontext has not catalogued) fail
+open: no preset blocks them. Each of these providers has a guard preset that
+blocks them: `block-unrecognized-github-operations`,
+`block-unrecognized-atlassian-operations` (Jira and Confluence),
+`block-unrecognized-hubspot-operations` and
+`block-unrecognized-databricks-operations`. Adding or enforcing another preset
 never adds or enforces one, and no validation warning is a reason to add one.
 
 - **It is the admin's choice.** Offer the guard as its own option; never add
@@ -223,6 +225,59 @@ never adds or enforces one, and no validation warning is a reason to add one.
   asks. If they ask you to keep one, send
   `{"action":"keep","policyId":"<guard id>"}`: it records the decision in
   History and does not change what is enforced. To stop one, use `stop`.
+  No Databricks preset ever added its guard, so none of these is Databricks.
+
+#### Databricks presets and products
+
+Databricks calls are classified from the Databricks MCP servers, the
+`databricks` CLI (including `databricks api`) and `curl` to Databricks hosts.
+Each call carries one product and a tier (`read`, `write`, `delete`,
+`admin`). The products:
+
+| Product | What it covers |
+|---|---|
+| `sql` | running SQL: `execute_sql`, the SQL Statement Execution API, `databricks experimental aitools` |
+| `data` | Unity Catalog catalogs, schemas, tables, volumes, connections, external locations, clean rooms |
+| `compute` | clusters, instance pools, libraries, cluster policies, SQL warehouses |
+| `workloads` | jobs, pipelines, bundles and apps as definitions (create, change, delete) |
+| `execution` | running code and deploying: job and pipeline runs, `bundle deploy`/`run`, `apps deploy`, command execution, `run_code` |
+| `workspace` | notebooks and files, repos, queries, dashboards, alerts |
+| `ai` | Genie, AI Search, model serving, ML experiments and models, agents |
+| `secrets` | secrets, tokens, credentials, service principal secrets; SQL that calls `secret()` counts here, not as `sql` |
+| `admin` | users, groups, permissions and grants, workspace and account settings, billing |
+
+The seven presets (read each one's `coverage` and `knownGaps` from
+`/policy/rule-templates` before you explain it):
+
+| Preset | Blocks |
+|---|---|
+| `databricks-read-only` | every catalogued write, delete and admin call, running SQL included |
+| `databricks-read-only-except-sql` | the same except running SQL, which is left to Unity Catalog grants and a read-only warehouse. With only this one on, SQL `DROP` and `GRANT` are allowed; say so, and offer `block-databricks-deletion` and `protect-databricks-administration` with it |
+| `block-databricks-deletion` | deletes, including SQL that drops, deletes or overwrites |
+| `protect-databricks-administration` | permission, ownership, grant, settings, user and group changes |
+| `protect-databricks-secrets` | product `secrets` at any tier, reads included |
+| `protect-databricks-runs-and-deploys` | product `execution` at write and above |
+| `block-unrecognized-databricks-operations` | the opt-in guard above, never offered by default |
+
+None of them sees the Databricks SDKs, Terraform, dbt, notebooks, or an MCP
+server Kontext cannot identify as Databricks; say so when it matters. For a
+rule no preset covers, such as one product, model it on
+`protect-databricks-runs-and-deploys`'s raw `cedar` (it matches one product
+and a tier on both the MCP and the shell side) and change the product.
+
+#### Endpoints a preset does not reach yet
+
+A provider preset only works on endpoints whose Kontext CLI classifies that
+provider; older CLIs keep allowing those calls. `GET /policy/preset-reach`
+lists, for each provider preset in the enforced or observing version, how
+many endpoints it targets (`targetedEndpoints`), the endpoints below its
+`minCliVersion` (`belowMinimum`) and those that have not reported a version
+(`unknownVersion`), each with `deviceLabel`, `userEmail` and `cliVersion`.
+`minCliVersion` null means no released CLI enforces the preset yet, so every
+endpoint is listed. It only informs: the preset still applies everywhere and
+nothing is gated. After adding or before enforcing a provider preset, read it
+and tell the user which Macs need a CLI update before the preset protects
+them. A 404 means the server does not offer it yet: say you could not check.
 
 **Always pass `If-Match` as the helper's fourth argument for actions.** A missing
 header returns 428. On 412, re-read the deployment, reconcile the change, and
@@ -310,7 +365,7 @@ enforcement, in this prompt or a later one.
    `action == Kontext::Action::"ToolUse"`. How to name the tool:
    - Shell commands are `Kontext::Tool::"shell"`; match the parsed
      `context.shell.facts` the way the presets do.
-   - GitHub, Atlassian and HubSpot MCP calls are resolved through a catalog,
+   - GitHub, Atlassian, HubSpot and Databricks MCP calls are resolved through a catalog,
      and only some tools keep a name (for example
      `github-mcp/merge_pull_request`); the rest arrive as
      `<provider>-mcp/unrecognized` with an access tier. For these providers
@@ -347,7 +402,7 @@ enforcement, in this prompt or a later one.
    for it with its scope and what it would block. Add an example call where it
    helps the user recognise it. End with one question, such as "Were any of
    these intended? Reply with the numbers to leave alone, or say add all."
-   When the findings cover GitHub, Jira, Confluence or HubSpot and that
+   When the findings cover GitHub, Jira, Confluence, HubSpot or Databricks and that
    provider's block-unrecognized guard is not in the set, add one optional
    line per provider below the list, not numbered with the findings: block
    that provider's operations Kontext cannot recognise, how many logged calls
@@ -372,7 +427,9 @@ enforcement, in this prompt or a later one.
     already blocks shows no change; say that, rather than that the rule does
     not match. When the motivating calls were not replayable, or were
     replayed as allowed, say that plainly instead of implying the policy
-    works, and fix the rule when you can.
+    works, and fix the rule when you can. For each provider preset you added,
+    name the Macs `/policy/preset-reach` lists (see
+    [Endpoints a preset does not reach yet](#endpoints-a-preset-does-not-reach-yet)).
 11. **Finish.** If the user did not ask for enforcement, say which version is
     observing (by number), that nothing blocks yet, and suggest letting it
     observe a few days of normal work so the evidence covers it. The next
@@ -414,7 +471,9 @@ them: show it, ask one question, and enforce only after a clear yes.
    [Change Cedar policy safely](#change-cedar-policy-safely), and read
    `/policy/blocked?days=7`. Per policy: how many recorded calls it would have
    blocked, by which agents and Macs, with one or two examples, and whether any
-   of those look like normal work it would now break.
+   of those look like normal work it would now break. For provider presets,
+   also the Macs `/policy/preset-reach` lists, which keep allowing those calls
+   after enforcement until their CLI is updated.
 4. **Judge the evidence and say it in one line per policy:** replay checks
    the rule against recorded calls, so its age does not matter. Enough when
    the replay window holds several days of normal work and the rule matched
