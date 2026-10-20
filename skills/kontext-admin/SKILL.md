@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.9.2"
+  version: "0.10.0"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -24,8 +24,8 @@ Connect once: permissions live under **Settings → Agent access** and changes a
 The dashboard prompt is **"Connect to Kontext and show me my policies."** Complete it with reads only:
 
 1. Run `scripts/kontext-api.sh GET /api/v1/policy/deployment`, completing browser approval if needed.
-2. Read `GET /api/v1/policy/versions/{id}` for each distinct non-null policy version named in the deployment.
-3. Summarize the policies and whether they are enforced, observing, or disabled. If there is no version, say that no policies are configured. Stop here. Connection does not require onboarding, provisioning, or any write request.
+2. Read `GET /api/v1/policy/versions/{id}` for each distinct non-null policy version named in the deployment, and `GET /api/v1/policy/versions` for `guardsToConfirm`.
+3. Summarize the policies and whether they are enforced, observing, or disabled, and name any guard in `guardsToConfirm` (see [Unrecognized-operation guards are opt-in](#unrecognized-operation-guards-are-opt-in)). If there is no version, say that no policies are configured. Stop here. Connection does not require onboarding, provisioning, or any write request.
 
 You can also connect explicitly first:
 
@@ -61,7 +61,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Policy state and history | `GET /policy/deployment` (both slots + ETag), `GET /policy`, `GET /policy/versions`, `GET /policy/versions/{id}`, `GET /policy/rule-templates` | `management:policy:read` |
 | Policy actions | `POST /policy/actions`, `POST /policy/validations` | `management:policy:write` |
 | Policy-set versions | `POST /policy/deployment/promote` (enforce the reviewed observing version), `POST /policy/deployment/rollback` (enforce an earlier version again) | `management:policy:write` |
-| Policy evidence | `POST /policy/replay`, `GET /policy/blocked?days=7` | `management:policy:read` |
+| Policy evidence | `POST /policy/replay`, `GET /policy/blocked?days=7`, `GET /policy/preset-reach` (endpoints whose CLI is too old for a preset) | `management:policy:read` |
 | Decisions | `GET /decisions` (filters: provider, decisionResult, decisionCategory, reasonCode, riskLevel, installationId, sessionId, from/to; cursor pagination), `GET /decisions/{id}` | `management:logs:read` |
 | Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
 | Risks | `GET /enterprise/dashboard/risk/summary` (from/to), `GET /enterprise/dashboard/risk/findings` (from/to, severity, riskCategory, agent, principal, decision; cursor pagination), `GET /enterprise/dashboard/execution/failures` (from/to, toolName) | `management:logs:read` |
@@ -128,13 +128,14 @@ recorded calls would have done under the candidate.
    `anthropic-claude-code` or `openai-codex` (use the catalog/OpenAPI enum).
    To add copies for several scopes in one transaction, use `scopes` instead of
    the top-level scope fields, for example `[{"agentId":"openai-codex"}]`.
-   Some presets need a companion guard; the server adds it in the same action
-   and lists it in the response's `message` and `changedPolicyIds`, and enforcing
-   the preset enforces its guard too, so a preset's companion needs no add or
-   enforce of its own. A custom policy gets no companion: when it needs a
-   block-unrecognized guard, add and enforce that preset yourself.
-   A 409 `policy_already_present` means a copy is already in the set (often a
-   companion added earlier) and nothing changed, so keep the last good ETag.
+   An add saves only the policy you name; the server adds no guard with it.
+   If `changedPolicyIds` in the response lists more than what you added, the
+   server predates guards being opt-in: tell the user, and do not enforce
+   until they decide about the extra guard.
+   Add a block-unrecognized guard only when the user chose it (see
+   [Unrecognized-operation guards are opt-in](#unrecognized-operation-guards-are-opt-in)).
+   A 409 `policy_already_present` means a copy is already in the set and
+   nothing changed, so keep the last good ETag.
    Re-read the version and check each requested scope: scoped copies carry
    `:endpoint:` or `:agent:` after the policy ID. When every scope you asked for
    is there, treat it as done, not as an error; otherwise add only the missing
@@ -157,12 +158,10 @@ recorded calls would have done under the candidate.
    to `/policy/actions` with the current deployment ETag. This promotes only
    that policy's blocks; other changes keep observing. This explicit action may
    switch observe → enforce. In a paused workspace it changes the selection but
-   keeps enforcement paused. Enforcing a preset also enforces its observing
-   companion guard; the response's `changedPolicyIds` lists both.
+   keeps enforcement paused. Enforcing a preset enforces only that preset,
+   never a guard with it; the response's `changedPolicyIds` lists what changed.
    Stop with `{"action":"stop","policyId":"..."}` to move it back to observing.
-   Stopping a preset does not stop the guard enforced with it, since a guard
-   can also be enforced on its own; stop the guard separately when it should
-   go too. When nothing blocks after a stop or an enforced delete, the
+   Stopping a preset leaves any guard as it is. When nothing blocks after a stop or an enforced delete, the
    workspace observes again: the response's `rolloutMode` is `observe`.
    Remove with `{"action":"delete","policyId":"...","where":"observing"}` or
    `"where":"enforced"`; deleting an enforced policy also removes its observing copies.
@@ -195,6 +194,125 @@ recorded calls would have done under the candidate.
    Check `/policy/blocked?days=7` and `/decisions?from=<change time>` after a relevant
    test call. History records one origin per action. A successful API write does
    not prove that a Mac has checked in and applied it.
+
+#### Unrecognized-operation guards are opt-in
+
+GitHub, Jira, Confluence, HubSpot and Databricks presets see only the
+operations Kontext can classify. Operations it cannot classify (an
+uncatalogued MCP tool, a non-literal `gh api` path, a `databricks` command or
+REST route Kontext has not catalogued) fail open: ordinary presets do not
+block them. Each provider has a guard preset that does:
+`block-unrecognized-github-operations`,
+`block-unrecognized-atlassian-operations` (Jira and Confluence),
+`block-unrecognized-hubspot-operations` and
+`block-unrecognized-databricks-operations`. Adding or enforcing another preset
+never adds or enforces one, and no validation warning is a reason to add one.
+For Databricks, a known operation whose body comes from a file or stdin (for
+example SQL loaded from a file through `databricks api`) is a different case
+(for the other providers such a call counts as unrecognized, for example
+`gh api … --input body.json`, so their guard does block it): it keeps its
+catalogued tier, so tier presets such as read only still block it, but checks
+that read the body (SQL deletes, grants, `secret()`) cannot, and the guard does
+not help there. A body or SQL computed in the shell (`"$SQL"`, `"$BODY"`)
+counts as unrecognized, so the guard does block that.
+
+- **It is the admin's choice.** Offer the guard as its own option; never add
+  or enforce it on your own. Say the trade-off with it: it closes the gap, but
+  it blocks more than unknown operations. It blocks every MCP call of that
+  provider that arrives as `<provider>-mcp/unrecognized`, including tools
+  Kontext classifies by access tier without naming them (for example
+  read-only GitHub tools), shell commands for that provider it cannot fully
+  parse, and new tools and commands Kontext has not catalogued, so an
+  agent's new MCP tool or CLI command can stop working; a Kontext update may
+  not unblock it, because some catalogued tools still arrive unnamed. Add it only after the user picks the guard itself; then it
+  observes and is enforced like any other policy, and its replay shows the
+  recorded calls it would newly block (only replayable ones).
+- **Guards from before this change.** A write preset used to add and enforce
+  its guard automatically. Those guards stay enforced. `GET /policy/versions`
+  returns `guardsToConfirm`: the guards still enforced that way that nobody
+  has confirmed, and the dashboard's Policies page asks the admin for each one
+  ("Keep" or "Stop"). When you summarise the policies, name these and say the
+  dashboard asks about them. Do not stop, delete or keep them unless the user
+  asks. If they ask you to keep one, send
+  `{"action":"keep","policyId":"<guard id>"}`: it records the decision in
+  History and does not change what is enforced. To stop one, use `stop`.
+  No Databricks preset ever added its guard, so none of these is Databricks.
+
+#### Databricks presets and products
+
+Databricks calls are classified from the Databricks MCP servers, the
+`databricks` CLI (including `databricks api`) and `curl` to Databricks hosts.
+Each call carries one product and a tier (`read`, `write`, `delete`,
+`admin`). The product belongs to the operation, not to a whole resource
+family, so the table below is the usual case, not a rule:
+
+| Product | What it covers |
+|---|---|
+| `sql` | running SQL: `execute_sql`, the SQL Statement Execution API, `databricks experimental aitools` |
+| `data` | Unity Catalog catalogs, schemas, tables, volumes, connections, external locations, clean rooms |
+| `compute` | clusters, instance pools, cluster policies, SQL warehouses |
+| `workloads` | jobs, pipelines, bundles and apps as definitions (create, change, delete) |
+| `execution` | running code and deploying: job and pipeline runs, `bundle deploy`/`run`, `apps deploy`, command execution, `run_code` |
+| `workspace` | notebooks and files, repos, queries, dashboards, alerts |
+| `ai` | Genie, AI Search, model serving, ML experiments and models, agents |
+| `secrets` | secrets, tokens, credentials, service principal secrets; SQL that calls `secret()` counts here, not as `sql` |
+| `admin` | users, groups, permissions and grants, workspace and account settings, billing |
+
+Exceptions worth knowing: installing libraries is `execution`; DBFS deletes
+and Files API uploads are `data`; creating a Unity Catalog connection is
+`secrets`; creating a storage credential is `data` at `admin`; the MCP
+`uc-function` tool is `execution` at `write`; creating a Unity Catalog
+credential is `data` at `admin` and an account credential `admin`; starting a
+Genie conversation through the CLI is `sql` at `write`, while the MCP Genie
+tools are `ai`. A product rule can therefore
+miss calls you expect it to catch: replay it (step 10 of the propose
+workflow) and check that the calls that motivated it are caught.
+
+The seven presets (read each one's `coverage` and `knownGaps` from
+`/policy/rule-templates` before you explain it, and offer one only when that
+catalog lists it):
+
+| Preset | Blocks |
+|---|---|
+| `databricks-read-only` | every catalogued write, delete and admin call, running SQL included |
+| `databricks-read-only-except-sql` | the same except running SQL, which is left to Unity Catalog grants and a read-only warehouse. With only this one on, SQL `DROP` and `GRANT` are allowed; say so, and offer `block-databricks-deletion` and `protect-databricks-administration` with it |
+| `block-databricks-deletion` | deletes, including SQL that drops, deletes or overwrites |
+| `protect-databricks-administration` | permission, ownership, grant, settings, user and group changes |
+| `protect-databricks-secrets` | product `secrets` at any tier, reads included |
+| `protect-databricks-runs-and-deploys` | product `execution` at write and above |
+| `block-unrecognized-databricks-operations` | the opt-in guard above, never added or enforced by default |
+
+None of them sees the Databricks SDKs, Terraform, dbt, notebooks, or an MCP
+server Kontext cannot identify as Databricks; say so when it matters. For a
+rule no preset covers, such as one product, model it on
+a preset's raw `cedar` that matches on both the MCP and the shell side:
+`protect-databricks-runs-and-deploys` for one product at write and above,
+`protect-databricks-secrets` for one product at every tier, reads included.
+Change the product, and choose the tiers on purpose.
+
+#### Endpoints a preset does not reach yet
+
+A provider preset only works on endpoints whose Kontext CLI classifies that
+provider; older CLIs keep allowing those calls. `GET /policy/preset-reach`
+lists, for each provider preset in the enforced or observing version, how
+many endpoints it targets (`targetedEndpoints`), the endpoints below its
+`minCliVersion` (`belowMinimum`) and those that have not reported a version
+(`unknownVersion`), each with `deviceLabel`, `userEmail` and `cliVersion`.
+It only informs: the preset still applies everywhere and nothing is gated.
+After adding or before enforcing a provider preset, read it and report three
+cases apart:
+- `belowMinimum`: these Macs need a CLI update to `minCliVersion` or later
+  before the preset protects them.
+- `unknownVersion`: these Macs reported no release version (or a `dev`
+  build), so whether the preset reaches them is unverified, not known to fail.
+- `minCliVersion` null: no CLI release enforcing the preset is recorded yet,
+  so there is no update to point to; say the preset does not reach these
+  Macs until one ships.
+Top-level `presets` merges the enforced and observing versions; when you
+review one version, use its entry in `versions[].presets` instead. A paused
+set returns no entries. A preset in the version that the response does not list was not checked; say
+so rather than implying full coverage. A 404 means the server does not offer
+the check: say you could not check.
 
 **Always pass `If-Match` as the helper's fourth argument for actions.** A missing
 header returns 428. On 412, re-read the deployment, reconcile the change, and
@@ -267,14 +385,11 @@ enforcement, in this prompt or a later one.
    not checked in recently and so will not pick up changes soon.
 5. **Read the preset catalog:** `GET /policy/rule-templates`. Each template
    carries `availability`, `coverage`, `knownGaps` and its raw `cedar`. Prefer a
-   preset when one covers a risk or a write-capable tool you saw in use. Some
-   presets need a companion guard (for example a block-unrecognized operations
-   policy); the server adds it with the preset, so do not add that companion
-   separately. Step 7 covers the one case where you add a guard yourself.
-   The user never asked for the guard, so never present it as a policy of its
-   own: describe it inside the preset, for example "Require human merge, which
-   also blocks GitHub calls Kontext cannot identify", and say what its replay
-   would block in the same line.
+   preset when one covers a risk or a write-capable tool you saw in use. A
+   preset adds no guard: operations Kontext cannot classify still pass it.
+   Never propose a block-unrecognized guard as a finding or add it by default;
+   step 8 offers it as an opt-in choice (see
+   [Unrecognized-operation guards are opt-in](#unrecognized-operation-guards-are-opt-in)).
 6. **Write custom raw policies for what no preset covers.** Look for it before
    concluding the presets are enough: logs usually show something specific to
    this workspace, such as a particular MCP tool, a provider no preset names, or
@@ -285,7 +400,7 @@ enforcement, in this prompt or a later one.
    `action == Kontext::Action::"ToolUse"`. How to name the tool:
    - Shell commands are `Kontext::Tool::"shell"`; match the parsed
      `context.shell.facts` the way the presets do.
-   - GitHub, Atlassian and HubSpot MCP calls are resolved through a catalog,
+   - GitHub, Atlassian, HubSpot and Databricks MCP calls are resolved through a catalog,
      and only some tools keep a name (for example
      `github-mcp/merge_pull_request`); the rest arrive as
      `<provider>-mcp/unrecognized` with an access tier. For these providers
@@ -306,11 +421,14 @@ enforcement, in this prompt or a later one.
    builds on>\n\n<your statement>"}`. That is the observing version (in an
    observe-only workspace, `policyVersionId`), else the enforced version, and
    only when neither exists the catalog's `default-permit` cedar. Fix and validate again
-   until `valid` is true. Treat warnings as problems too: `unsupported_tool_id`
-   means the policy would never match, and `forbid_may_fail_open` means calls
-   without a tier slip past: add the provider's block-unrecognized preset when
-   the catalog has one, otherwise match the tool by resource instead. Drop a policy you cannot make valid and
-   say why.
+   until `valid` is true. Fix `unsupported_tool_id` too: the policy would never
+   match. Other warnings are informational. A `forbid_may_fail_open` warning
+   says the rule reads `context.tool`, so it does not match operations Kontext
+   cannot classify; that is the default, not a defect. (The same code as an
+   error, for a rule reading `context.shell`, makes `valid` false: fix the rule
+   as the error says.) Never add a guard because of
+   it: tell the user in the policy's line in step 8 and leave the guard to the
+   opt-in choice there. Drop a policy you cannot make valid and say why.
 8. **Show what you found and ask whether it was intended.** Start with one line
    on normal activity (calls, Macs, agents, main tools over the window). Then a
    numbered list of findings, most important first, three to six is typical.
@@ -319,6 +437,14 @@ enforcement, in this prompt or a later one.
    for it with its scope and what it would block. Add an example call where it
    helps the user recognise it. End with one question, such as "Were any of
    these intended? Reply with the numbers to leave alone, or say add all."
+   When the findings cover GitHub, Jira, Confluence, HubSpot or Databricks and that
+   provider's block-unrecognized guard is not in the set, add one optional
+   line per provider below the list, not numbered with the findings: block
+   that provider's operations Kontext cannot recognise, how many logged calls
+   it would have blocked at least (every `<provider>-mcp/unrecognized` call,
+   some of them ordinary reads), and the trade-off from
+   [Unrecognized-operation guards are opt-in](#unrecognized-operation-guards-are-opt-in). "Add all"
+   does not include it; add it only when the user names it.
    Mention that adding a policy only observes, so nothing blocks yet. Then stop
    and wait for the answer. If nothing stands out, say so, name the one or two
    presets still worth observing for the tools in use, and ask the same way.
@@ -327,8 +453,7 @@ enforcement, in this prompt or a later one.
    intended and say that you did. Follow
    [Change Cedar policy safely](#change-cedar-policy-safely) for ETags and
    errors. Before each add, read the current version's text and skip a policy
-   only when it is already there for the same scope (companion guards added by
-   an earlier preset count; they apply to the scope of that preset). Handle a
+   only when it is already there for the same scope. Handle a
    409 `policy_already_present` as described there: done when every requested
    scope exists, otherwise add the missing scopes.
 10. **Replay** the resulting observing version over 30 days (or 7 or 14). For
@@ -337,7 +462,9 @@ enforcement, in this prompt or a later one.
     already blocks shows no change; say that, rather than that the rule does
     not match. When the motivating calls were not replayable, or were
     replayed as allowed, say that plainly instead of implying the policy
-    works, and fix the rule when you can.
+    works, and fix the rule when you can. For each provider preset you added,
+    name the Macs `/policy/preset-reach` lists (see
+    [Endpoints a preset does not reach yet](#endpoints-a-preset-does-not-reach-yet)).
 11. **Finish.** If the user did not ask for enforcement, say which version is
     observing (by number), that nothing blocks yet, and suggest letting it
     observe a few days of normal work so the evidence covers it. The next
@@ -379,7 +506,9 @@ them: show it, ask one question, and enforce only after a clear yes.
    [Change Cedar policy safely](#change-cedar-policy-safely), and read
    `/policy/blocked?days=7`. Per policy: how many recorded calls it would have
    blocked, by which agents and Macs, with one or two examples, and whether any
-   of those look like normal work it would now break.
+   of those look like normal work it would now break. For provider presets,
+   also what `/policy/preset-reach` reports, kept in its three cases (see
+   [Endpoints a preset does not reach yet](#endpoints-a-preset-does-not-reach-yet)).
 4. **Judge the evidence and say it in one line per policy:** replay checks
    the rule against recorded calls, so its age does not matter. Enough when
    the replay window holds several days of normal work and the rule matched
@@ -390,18 +519,18 @@ them: show it, ask one question, and enforce only after a clear yes.
    do these things; an observe-only workspace switches to enforcing; each Mac
    applies it at its next check-in; "Roll back" undoes it), then one question
    such as "Enforce these 3 policies now?" When some are thin, offer to enforce
-   only the others. A preset and the companion guard the server enforces with
-   it, or a custom policy and the guard it relies on, are one choice: list them
-   together and never offer one without the other. These presets bring their
-   provider's block-unrecognized guard when enforced, whichever preset first
-   added it: `github-read-only`, `protect-git-history`, `require-human-merge`,
-   `protect-releases-and-workflows`, `protect-repository-settings`, the Jira and
-   Confluence `*-read-only`, `block-*-deletion` and `protect-*-administration`
-   presets, `hubspot-read-only` and `protect-hubspot-settings`. Others, such as
-   `block-github-force-push`, bring none. Name the guard with each one that
-   brings it, for example "Require human merge, which also blocks GitHub calls
-   Kontext cannot identify", and trust the enforce response's
-   `changedPolicyIds` over this list. Then stop and wait. A yes the user gave earlier in the
+   only the others. Each policy is its own choice: enforcing a preset enforces
+   no guard with it. Offer a block-unrecognized guard only when the user opted
+   in to it; name it as its own item with its trade-off and its replay. A guard
+   still observing from before guards were opt-in, which nobody chose, is not
+   offered for enforcing unless the user asks: leave it observing, and since
+   promoting the whole version would enforce it, enforce the approved policies
+   one by one instead. When the version must go whole (step 6: it modifies or
+   removes a policy or changes a `permit`), name the guard as part of it with
+   its trade-off and let the user choose: the whole version with the guard,
+   or delete the guard from observing first (`"where":"observing"`), replay
+   again, and then the whole version. Never promote a version with that guard
+   in it unless the user chose that. Then stop and wait. A yes the user gave earlier in the
    conversation counts only if they had seen this evidence.
 6. **Enforce what the user approved.** All of the observing version: promote it
    (step 4 of [Change Cedar policy safely](#change-cedar-policy-safely)). Only
@@ -409,10 +538,10 @@ them: show it, ask one question, and enforce only after a clear yes.
    using the exact `@id` of each copy as it appears in the version text (scoped
    copies carry their `:endpoint:` or `:agent:` suffix); an `@id` without a
    scope suffix, preset or custom, is also the base ID and enforces every copy,
-   so use it only when the user approved every copy. Include any block-unrecognized guard a custom policy relies on.
+   so use it only when the user approved every copy.
    Promote only when the user approved every change from step 2, removals
    and modifications included. Offer a partial pick only among new `forbid`
-   policies, each taken whole with every scoped copy and its guards, since
+   policies, each taken whole with every scoped copy, since
    replay counts copies under their base ID; those counts stay valid on their
    own.
    When the observing version modifies or removes a policy or changes a
@@ -464,8 +593,8 @@ Never guess a rollback target from a version's number.
    other copies are enforced, name them all in the question. Ask one question,
    such as "Stop blocking these 2 policies and keep them observing?", then wait
    for a yes. A guard that started blocking with that enforcement is one of
-   those policies: list it and stop it too, unless another enforced preset
-   still needs it, and then say it stays.
+   those policies: list it like any other. A guard enforced before guards were
+   opt-in that the step 2 comparison does not show stays as it is.
 
    `stop` only undoes policies that newly started blocking. When the last
    enforcement also modified or removed an enforced policy, or the user asks
