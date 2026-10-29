@@ -20,7 +20,7 @@ unset KONTEXT_CLIENT_ID KONTEXT_CLIENT_SECRET
 source "$(dirname "$0")/kontext-context.sh"
 
 CLIENT_ID="$IDENTITY"
-UA="kontext-skill/0.10.0"
+UA="kontext-skill/0.10.1"
 CALLBACK_PORT=8976
 FLOW="${KONTEXT_CONNECT_FLOW:-pkce}"
 # Approval often goes through a relayed URL or a second device, so wait long.
