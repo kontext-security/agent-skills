@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.10.0"
+  version: "0.10.1"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -57,7 +57,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Directory / SCIM | `GET/POST /organizations/current/directory/scim-tokens`, `POST …/scim-tokens/{sha256}/revoke`, `GET …/directory/status`, `…/groups`, `…/reconciliation` | `management:directory:read` / `:write` |
 | Workspace | `GET /organizations/current` (`id`, `name` of the workspace this token acts in) | any |
 | Agent access | `GET /organizations/current/agent-access` (PATCH requires an admin dashboard session) | `management:settings:read` |
-| Org settings | `GET/PATCH /policy/settings` (`policyEnabled`, `payloadCaptureMode`) | `management:settings:read` / `:write` |
+| Org settings | `GET/PATCH /policy/settings` (`payloadCaptureMode`) | `management:settings:read` / `:write` |
 | Policy state and history | `GET /policy/deployment` (both slots + ETag), `GET /policy`, `GET /policy/versions`, `GET /policy/versions/{id}`, `GET /policy/rule-templates` | `management:policy:read` |
 | Policy actions | `POST /policy/actions`, `POST /policy/validations` | `management:policy:write` |
 | Policy-set versions | `POST /policy/deployment/promote` (enforce the reviewed observing version), `POST /policy/deployment/rollback` (enforce an earlier version again) | `management:policy:write` |
