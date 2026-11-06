@@ -1,7 +1,7 @@
 ---
 name: kontext-admin
 metadata:
-  version: "0.10.1"
+  version: "0.10.2"
 description: Configure and operate a Kontext organization through its management API — SCIM/Entra directory sync, org settings, policies and policy-set versions, authorization decisions, risks, traces, managed endpoints, and releases. Use when asked to connect to Kontext, connect Entra/SCIM, check logs and risks, propose, write or enforce policies, inspect policy decisions, risks or traces, change Kontext settings, or download Kontext releases.
 ---
 
@@ -64,7 +64,7 @@ Machine-readable contract: `GET {KONTEXT_API_BASE}/api/openapi.json` — fetch t
 | Policy evidence | `POST /policy/replay`, `GET /policy/blocked?days=7`, `GET /policy/preset-reach` (endpoints whose CLI is too old for a preset) | `management:policy:read` |
 | Decisions | `GET /decisions` (filters: provider, decisionResult, decisionCategory, reasonCode, riskLevel, installationId, sessionId, from/to; cursor pagination), `GET /decisions/{id}` | `management:logs:read` |
 | Traces | `GET /traces`, `GET /traces/stats`, `GET /traces/{traceId}` | `management:logs:read` |
-| Risks | `GET /enterprise/dashboard/risk/summary` (from/to), `GET /enterprise/dashboard/risk/findings` (from/to, severity, riskCategory, agent, principal, decision; cursor pagination), `GET /enterprise/dashboard/execution/failures` (from/to, toolName) | `management:logs:read` |
+| Risks | `GET /enterprise/dashboard/risk/summary` (from/to), `GET /enterprise/dashboard/risk/findings` (from/to, severity, minSeverity, assessment, framework, riskCategory, agent, principal, decision; cursor pagination; with no severity filter it returns every flagged call, including `assessment=likely_benign`, shown as No risk, and `insufficient_evidence`, which is not a safe verdict), `GET /enterprise/dashboard/execution/failures` (from/to, toolName) | `management:logs:read` |
 | Demo mode | `GET /demo-data/mode` (returns `{"demoMode": true}` or `false`; read-only) | `management:logs:read` |
 | Endpoints (Macs) | `GET /organizations/current/directory/reconciliation` (every managed endpoint: `installationId`, `deviceLabel`, `userEmail`, `lastSeenAt`, directory match) | `management:directory:read` |
 | Releases | `GET /deployments/releases`, `GET /deployments/releases/latest`, `POST /deployments/releases/{version}/artifacts/{kind}/download-url` | `management:deployments:read` |
